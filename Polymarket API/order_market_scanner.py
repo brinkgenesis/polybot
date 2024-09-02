@@ -3,6 +3,7 @@ from typing import List, Dict
 import logging
 import threading
 from int import clob_client  # Import the client from int.py
+from concurrent.futures import ThreadPoolExecutor, as_completed  # Import ThreadPoolExecutor
 
 # Configure logging to show only the message
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -35,6 +36,23 @@ def get_midpoint(token_id: str) -> Dict:
         logger.error(f"Error fetching midpoint for token ID {token_id}: {str(e)}")
         return {"error": str(e)}
 
+def fetch_data_for_token(token_id: str) -> Dict:
+    """Fetch and return data for a single token ID."""
+    try:
+        buy_price = get_price(token_id, "buy")
+        sell_price = get_price(token_id, "sell")
+        midpoint = get_midpoint(token_id)
+        
+        return {
+            "token_id": token_id,
+            "buy_price": buy_price,
+            "sell_price": sell_price,
+            "midpoint": midpoint
+        }
+    except Exception as e:
+        logger.error(f"Error fetching data for token ID {token_id}: {str(e)}")
+        return {"token_id": token_id, "error": str(e)}
+
 def scan_order_markets(token_ids: List[str], duration: int = 60):
     """
     Scan order markets for the given token IDs.
@@ -46,29 +64,23 @@ def scan_order_markets(token_ids: List[str], duration: int = 60):
     scanning = True
     end_time = time.time() + duration
     
-    while scanning and time.time() < end_time:
-        for token_id in token_ids:
-            try:
-                logger.info(f"Fetching data for Token ID: {token_id}")
-                
-                buy_price = get_price(token_id, "buy")
-                logger.info(f"Best Bid: {buy_price}")
-                
-                sell_price = get_price(token_id, "sell")
-                logger.info(f"Best Ask: {sell_price}")
-                
-                spread = get_spread(token_id)
-                logger.info(f"Spread: {spread}")
-                
-                midpoint = get_midpoint(token_id)
-                logger.info(f"Midpoint: {midpoint}")
-                
-                logger.info("---")
-            except Exception as e:
-                logger.error(f"Error fetching data for token ID {token_id}: {str(e)}")
-        
-        # Wait for 5 seconds before the next scan
-        time.sleep(5)
+    with ThreadPoolExecutor(max_workers=len(token_ids)) as executor:
+        while scanning and time.time() < end_time:
+            futures = [executor.submit(fetch_data_for_token, token_id) for token_id in token_ids]
+            results = [future.result() for future in as_completed(futures)]
+            
+            for result in results:
+                if "error" in result:
+                    logger.error(f"Error fetching data for token ID {result['token_id']}: {result['error']}")
+                else:
+                    logger.info(f"Token ID: {result['token_id']}")
+                    logger.info(f"Best Bid: {result['buy_price']}")
+                    logger.info(f"Best Ask: {result['sell_price']}")
+                    logger.info(f"Midpoint: {result['midpoint']}")
+                    logger.info("---")
+            
+            # Wait for 5 seconds before the next scan
+            time.sleep(5)
     
     logger.info("Scanning completed.")
 
