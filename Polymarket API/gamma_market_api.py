@@ -8,52 +8,58 @@ from config import (
     GAMMA_API_MIN_REWARDS_DAILY_RATE,
     GAMMA_API_MAX_MARKETS_TO_RETURN
 )
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def fetch_page(page):
+    """Fetch a single page of markets from the Gamma API."""
+    params = {
+        'page': page,
+        'limit': GAMMA_API_PAGE_LIMIT,
+        'sort': GAMMA_API_SORT_PARAM
+    }
+    response = requests.get(f"{GAMMA_API_URL}/markets", params=params)
+    response.raise_for_status()
+    return response.json()
 
 def get_high_liquidity_markets():
-    """Fetch high daily rewards markets from Gamma API"""
+    """Fetch high daily rewards markets from Gamma API using threading."""
     print("Fetching high daily rewards markets from Gamma API...")
     all_markets = []
-    page = 1
     min_end_date = datetime.now(timezone.utc) + timedelta(days=4)
+    max_pages = 50  # Increase the number of pages to fetch
+    page = 1
 
     try:
-        while True:
-            params = {
-                'page': page,
-                'limit': GAMMA_API_PAGE_LIMIT,
-                'sort': GAMMA_API_SORT_PARAM
-            }
-            response = requests.get(f"{GAMMA_API_URL}/markets", params=params)
-            response.raise_for_status()
-            markets = response.json()
-            
-            if not isinstance(markets, list):
-                print(f"Unexpected response format. Expected a list, received: {type(markets)}")
-                break
-
-            if not markets:  # No more markets to fetch
-                break
-
-            # Filter markets on this page
-            filtered_markets = []
-            for market in markets:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_page, page): page for page in range(1, max_pages + 1)}
+            for future in as_completed(futures):
                 try:
-                    if market.get('clobRewards') and \
-                       any(float(reward.get('rewardsDailyRate', 0)) >= GAMMA_API_MIN_REWARDS_DAILY_RATE for reward in market['clobRewards']) and \
-                       'endDate' in market and \
-                       parse(market['endDate']) > min_end_date:
-                        filtered_markets.append(market)
+                    markets = future.result()
+                    if not isinstance(markets, list):
+                        print(f"Unexpected response format. Expected a list, received: {type(markets)}")
+                        continue
+
+                    # Filter markets on this page
+                    filtered_markets = []
+                    for market in markets:
+                        try:
+                            if market.get('clobRewards') and \
+                               any(float(reward.get('rewardsDailyRate', 0)) >= GAMMA_API_MIN_REWARDS_DAILY_RATE for reward in market['clobRewards']) and \
+                               'endDate' in market and \
+                               parse(market['endDate']) > min_end_date:
+                                filtered_markets.append(market)
+                        except Exception as e:
+                            print(f"Error processing market: {e}")
+                            print(f"Market data: {market}")
+
+                    all_markets.extend(filtered_markets)
+                    print(f"Fetched page {futures[future]} with {len(markets)} markets. Found {len(all_markets)} matching markets so far.")
+
+                    if len(all_markets) >= 50:  # We have enough markets
+                        break
+
                 except Exception as e:
-                    print(f"Error processing market: {e}")
-                    print(f"Market data: {market}")
-            
-            all_markets.extend(filtered_markets)
-            print(f"Fetched page {page} with {len(markets)} markets. Found {len(all_markets)} matching markets so far.")
-            
-            if len(all_markets) >= 50 or len(markets) < GAMMA_API_PAGE_LIMIT:  # We have enough markets or it's the last page
-                break
-            
-            page += 1
+                    print(f"Error fetching page {futures[future]}: {e}")
 
         print(f"\nTotal markets fetched: {len(all_markets)}")
 
