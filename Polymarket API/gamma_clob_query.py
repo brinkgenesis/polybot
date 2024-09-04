@@ -1,6 +1,6 @@
 from gamma_market_api import get_high_liquidity_markets
 from int import clob_client
-from bid_manager import main as bid_manager_main
+from bid_manager import build_and_print_order, execute_orders
 from tqdm import tqdm
 import logging
 
@@ -86,7 +86,7 @@ def main():
             
             logger.info(f"Building orders for: {gamma_market.get('question', 'N/A')[:100]}...")
             try:
-                orders = bid_manager_main(matching_clob_market, gamma_market, clob_client)
+                orders = build_and_print_order(matching_clob_market, gamma_market, clob_client)
                 all_orders.extend(orders)
                 logger.info(f"Built {len(orders)} orders")
                 for i, order in enumerate(orders, 1):
@@ -94,6 +94,22 @@ def main():
                     for key, value in order.__dict__.items():
                         logger.info(f"  {key}: {value}")
                     logger.info("")  # Add space between orders
+                    
+                    # Prompt for user input
+                    action = input("Type 'execute' to place this order, or 'cancel' to skip it: ").lower().strip()
+                    
+                    if action == 'execute':
+                        try:
+                            # Execute the order using bid_manager
+                            execute_orders(clob_client, [order])
+                            logger.info(f"Order {i} executed successfully.")
+                        except Exception as e:
+                            logger.error(f"Failed to execute order {i}: {e}")
+                    elif action == 'cancel':
+                        logger.info(f"Order {i} skipped.")
+                    else:
+                        logger.warning(f"Invalid input. Order {i} skipped.")
+                
             except Exception as e:
                 logger.error(f"Error building orders: {e}")
             
@@ -108,18 +124,7 @@ def main():
     logger.info(f"Total CLOB markets: {len(all_clob_markets)}")
     logger.info(f"Total orders built: {len(all_orders)}")
 
-    # Instead of executing orders, just print them
-    if all_orders:
-        logger.info("Orders built (not executed):")
-        for i, order in enumerate(all_orders, 1):
-            logger.info(f"Order {i}:")
-            for key, value in order.__dict__.items():
-                logger.info(f"  {key}: {value}")
-            logger.info("")  # Add space between orders
-    else:
-        logger.info("No orders were built.")
-
-    return matched_markets  # Add this line to return matched_markets
+    return matched_markets
 
 if __name__ == "__main__":
     main()

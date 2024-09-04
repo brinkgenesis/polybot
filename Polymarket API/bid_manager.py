@@ -6,6 +6,7 @@ import time
 from py_clob_client.client import ClobClient
 from dotenv import load_dotenv
 import os
+import logging
 
 def build_and_print_order(market, gamma_market, client):
     # Print market information
@@ -45,19 +46,19 @@ def build_and_print_order(market, gamma_market, client):
     max_incentive_spread = float(market.get('max_incentive_spread', '0.03'))
 
     # Initial calculation
-    maker_amount_30 = round(best_bid - (2 * order_price_min_tick_size), 2)
-    maker_amount_70 = round(best_bid - (3 * order_price_min_tick_size), 2)
+    maker_amount_30 = round(best_bid - (2 * order_price_min_tick_size), 3)
+    maker_amount_70 = round(best_bid - (3 * order_price_min_tick_size), 3)
 
     # Check if orders exceed the maximum allowed difference from best bid
-    min_allowed_price = round(best_bid - max_incentive_spread, 2)
+    min_allowed_price = round(best_bid - max_incentive_spread, 3)
 
-    if maker_amount_30 < min_allowed_price:
+    if maker_amount_30 <= min_allowed_price:
         print("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
-        maker_amount_30 = round(best_bid - (2 * order_price_min_tick_size), 2)
+        maker_amount_30 = round(best_bid - (2 * order_price_min_tick_size), 3)
 
-    if maker_amount_70 < min_allowed_price:
+    if maker_amount_70 <= min_allowed_price:
         print("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
-        maker_amount_70 = round(best_bid - (3 * order_price_min_tick_size), 2)
+        maker_amount_70 = round(best_bid - (3 * order_price_min_tick_size), 3)
 
     print(f"Best Bid: {best_bid}")
     print(f"Maker Amount 30%: {maker_amount_30}")
@@ -90,20 +91,43 @@ def build_and_print_order(market, gamma_market, client):
 
     return order_30, order_70
 
-def execute_orders(client, orders):
-    for i, order in enumerate(orders):
-        signed_order = client.create_order(order)
-        print(f"\nAttempting to execute order {i+1}:")
-        print(signed_order)
-        
-        response = client.post_order(signed_order, OrderType.GTC)
-        print(f"Order {i+1} execution result:")
-        print(response)
-
-        if response.get('success'):
-            print(f"Order {i+1} placed successfully. Order ID: {response.get('orderID')}")
-        else:
-            print(f"Order {i+1} placement failed. Error: {response.get('errorMsg')}")
+def execute_orders(clob_client, orders):
+    execution_results = []
+    for order in orders:
+        try:
+            response = clob_client.place_order(order)
+            order_id = response.get('order_id')
+            if order_id:
+                logging.info(f"Order executed successfully. Order ID: {order_id}")
+                print(f"✅ Order executed successfully. Order ID: {order_id}")
+                execution_results.append((True, order_id))
+            else:
+                logging.warning(f"Order placement response didn't contain an order ID. Response: {response}")
+                print(f"⚠️ Order may not have been placed correctly. Check the logs for details.")
+                execution_results.append((False, None))
+        except Exception as e:
+            logging.error(f"Failed to execute order: {e}")
+            print(f"❌ Failed to execute order: {str(e)}")
+            execution_results.append((False, str(e)))
+    
+    # Summary of execution results
+    total_orders = len(orders)
+    successful_orders = sum(1 for result in execution_results if result[0])
+    print(f"\nExecution Summary:")
+    print(f"Total orders: {total_orders}")
+    print(f"Successfully executed: {successful_orders}")
+    print(f"Failed to execute: {total_orders - successful_orders}")
+    
+    # Optionally, you can add a check for open orders
+    try:
+        open_orders = clob_client.get_open_orders()
+        logging.info(f"Current open orders: {len(open_orders)}")
+        print(f"Current open orders: {len(open_orders)}")
+    except Exception as e:
+        logging.error(f"Failed to fetch open orders: {e}")
+        print(f"Failed to fetch open orders: {str(e)}")
+    
+    return execution_results
 
 def cancel_orders(client, order_ids):
     for order_id in order_ids:
@@ -129,50 +153,5 @@ def main(market, gamma_market, client):
 
     return orders
 
-def test_order_build():
-    # Load environment variables
-    load_dotenv()
-
-    # Create a mock client
-    host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
-    private_key = os.getenv("PRIVATE_KEY")
-    chain_id = int(os.getenv("CHAIN_ID", "137"))
-    mock_client = ClobClient(host, key=private_key, chain_id=chain_id)
-
-    # Create mock market and gamma_market data
-    mock_market = {
-        "question_id": "mock_question_id",
-        "tokens": [
-            {"token_id": "71321045679252212594626385532706912750332728571942532289631379312455583992563"},
-            {"token_id": "71321045679252212594626385532706912750332728571942532289631379312455583992564"}
-        ],
-        "minimum_tick_size": "0.01",
-        "max_incentive_spread": "0.03"
-    }
-
-    mock_gamma_market = {
-        "question": "Mock Question",
-        "bestBid": "0.60",
-        "bestAsk": "0.65",
-        "spread": "0.05",
-        "lastTradePrice": "0.62",
-        "clobRewards": [
-            {
-                "rewardsDailyRate": "100",
-                "rewardsMaxSpread": "0.03"
-            }
-        ]
-    }
-
-    # Test the build_and_print_order function
-    orders = build_and_print_order(mock_market, mock_gamma_market, mock_client)
-
-    # Print the resulting orders
-    print("\nTest Results:")
-    for i, order in enumerate(orders):
-        print(f"Order {i+1}:")
-        for key, value in order.__dict__.items():
-            print(f"  {key}: {value}")
-
 if __name__ == "__main__":
-    test_order_build()
+     pass
