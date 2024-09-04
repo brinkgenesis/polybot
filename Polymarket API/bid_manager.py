@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import os
 import logging
 
+logger = logging.getLogger(__name__)
+
 def build_and_print_order(market, gamma_market, client):
     # Print market information
     print("\nOrder Built for:")
@@ -91,42 +93,49 @@ def build_and_print_order(market, gamma_market, client):
 
     return order_30, order_70
 
-def execute_orders(clob_client, orders):
+def execute_orders(client, orders):
     execution_results = []
+
     for order in orders:
         try:
-            response = clob_client.place_order(order)
-            order_id = response.get('order_id')
-            if order_id:
-                logging.info(f"Order executed successfully. Order ID: {order_id}")
-                print(f"✅ Order executed successfully. Order ID: {order_id}")
-                execution_results.append((True, order_id))
+            # Create OrderArgs object
+            order_args = OrderArgs(
+                price=order.price,
+                size=order.size,
+                side=BUY if order.side == 'buy' else SELL,
+                token_id=order.token_id,
+                # Add other necessary parameters like feeRateBps, nonce, etc.
+            )
+
+            # Create and sign the order
+            signed_order = client.create_order(order_args)
+
+            # Post the order
+            resp = client.post_order(signed_order, OrderType.GTC)
+
+            if resp['success']:
+                logger.info(f"✅ Order executed successfully: {resp['orderID']}")
+                execution_results.append((True, resp['orderID']))
             else:
-                logging.warning(f"Order placement response didn't contain an order ID. Response: {response}")
-                print(f"⚠️ Order may not have been placed correctly. Check the logs for details.")
-                execution_results.append((False, None))
+                logger.warning(f"⚠️ Order may not have been placed correctly: {resp['errorMsg']}")
+                execution_results.append((False, resp['errorMsg']))
+
         except Exception as e:
-            logging.error(f"Failed to execute order: {e}")
-            print(f"❌ Failed to execute order: {str(e)}")
+            logger.error(f"❌ Failed to execute order: {str(e)}")
             execution_results.append((False, str(e)))
-    
-    # Summary of execution results
-    total_orders = len(orders)
+
+    # Print summary
     successful_orders = sum(1 for result in execution_results if result[0])
-    print(f"\nExecution Summary:")
-    print(f"Total orders: {total_orders}")
-    print(f"Successfully executed: {successful_orders}")
-    print(f"Failed to execute: {total_orders - successful_orders}")
-    
-    # Optionally, you can add a check for open orders
+    logger.info(f"\nExecution Summary:")
+    logger.info(f"Successfully executed orders: {successful_orders}/{len(orders)}")
+
+    # Fetch and display the current number of open orders
     try:
-        open_orders = clob_client.get_open_orders()
-        logging.info(f"Current open orders: {len(open_orders)}")
-        print(f"Current open orders: {len(open_orders)}")
+        open_orders = client.get_open_orders()
+        logger.info(f"Current number of open orders: {len(open_orders)}")
     except Exception as e:
-        logging.error(f"Failed to fetch open orders: {e}")
-        print(f"Failed to fetch open orders: {str(e)}")
-    
+        logger.error(f"Failed to fetch open orders: {str(e)}")
+
     return execution_results
 
 def cancel_orders(client, order_ids):
