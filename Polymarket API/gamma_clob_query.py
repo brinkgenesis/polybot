@@ -1,6 +1,5 @@
 from gamma_market_api import get_high_liquidity_markets
 from int import clob_client
-from bid_manager import build_and_print_order, execute_orders
 from tqdm import tqdm
 import logging
 
@@ -84,34 +83,6 @@ def main():
                 'clob_market': matching_clob_market
             })
             
-            logger.info(f"Building orders for: {gamma_market.get('question', 'N/A')[:100]}...")
-            try:
-                orders = build_and_print_order(matching_clob_market, gamma_market, clob_client)
-                all_orders.extend(orders)
-                logger.info(f"Built {len(orders)} orders")
-                for i, order in enumerate(orders, 1):
-                    logger.info(f"Order {i}:")
-                    for key, value in order.__dict__.items():
-                        logger.info(f"  {key}: {value}")
-                    logger.info("")  # Add space between orders
-                    
-                    # Prompt for user input
-                    action = input("Type 'execute' to place this order, or 'cancel' to skip it: ").lower().strip()
-                    
-                    if action == 'execute':
-                        try:
-                            # Execute the order using bid_manager
-                            execute_orders(clob_client, [order])
-                            logger.info(f"Order {i} executed successfully.")
-                        except Exception as e:
-                            logger.error(f"Failed to execute order {i}: {e}")
-                    elif action == 'cancel':
-                        logger.info(f"Order {i} skipped.")
-                    else:
-                        logger.warning(f"Invalid input. Order {i} skipped.")
-                
-            except Exception as e:
-                logger.error(f"Error building orders: {e}")
             
             logger.info("-" * 50)
         else:

@@ -1,12 +1,7 @@
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
 from py_clob_client.order_builder.constants import BUY, SELL
-from py_clob_client.order_builder.helpers import to_token_decimals, round_down
-from py_order_utils.utils import generate_seed
-import time
-from py_clob_client.client import ClobClient
-from dotenv import load_dotenv
-import os
 import logging
+from pprint import pprint
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +10,8 @@ def build_and_print_order(market, gamma_market, client):
     print("\nOrder Built for:")
     print(f"Question: {gamma_market.get('question', 'N/A')}")
     print(f"Question ID: {market.get('question_id', 'N/A')}")
-    print(f"Token ID for YES: {market['tokens'][0]['token_id']}")
-    print(f"Token ID for NO: {market['tokens'][1]['token_id']}")
+    print(f"Token ID for YES: {market['token_ids'][0]}")
+    print(f"Token ID for NO: {market['token_ids'][1]}")
     print(f"Condition ID: {market.get('condition_id', 'N/A')}")
     print(f"End Date: {market.get('end_date_iso', 'N/A')}")
     
@@ -66,49 +61,57 @@ def build_and_print_order(market, gamma_market, client):
     print(f"Maker Amount 30%: {maker_amount_30}")
     print(f"Maker Amount 70%: {maker_amount_70}")
 
-    # Build orders
-    order_30 = OrderArgs(
+    # Build orders using OrderArgs
+    order_args_30 = OrderArgs(
         price=maker_amount_30,
         size=order_size_30,
         side=BUY,
-        token_id=market['tokens'][0]['token_id'],  # YES token
+        token_id=market['token_ids'][0],  # YES token
         fee_rate_bps=0,  # Assuming no fee, adjust if needed
-        nonce=generate_seed(),
-        expiration=str(int(time.time()) + 86400)  # 24 hours from now
+        nonce=0,
+        expiration='0' # Set expiration to '0' as required by the API
     )
 
-    order_70 = OrderArgs(
+    order_args_70 = OrderArgs(
         price=maker_amount_70,
         size=order_size_70,
         side=BUY,
-        token_id=market['tokens'][0]['token_id'],  # YES token
+        token_id=market['token_ids'][0],  # YES token
         fee_rate_bps=0,  # Assuming no fee, adjust if needed
-        nonce=generate_seed(),
-        expiration=str(int(time.time()) + 86400)  # 24 hours from now
+        nonce=0,
+        expiration='0' # Set expiration to '0' as required by the API
     )
 
-    print("\nOrders built:")
-    print(f"30% Order: {order_30}")
-    print(f"70% Order: {order_70}")
+    print("\nOrder arguments built:")
+    print(f"30% Order Args: {order_args_30}")
+    print(f"70% Order Args: {order_args_70}")
 
-    return order_30, order_70
+    return {"order_args_30": order_args_30, "order_args_70": order_args_70}
 
-def execute_orders(client, orders):
+def execute_orders(client, order_args):
     execution_results = []
 
-    for order in orders:
-        try:
-            # Create OrderArgs object
-            order_args = OrderArgs(
-                price=order.price,
-                size=order.size,
-                side=BUY if order.side == 'buy' else SELL,
-                token_id=order.token_id,
-                # Add other necessary parameters like feeRateBps, nonce, etc.
-            )
+    # Update balance allowance
+    try:
+        allowance_params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            token_id=None,  # Not needed for COLLATERAL
+            signature_type=client.builder.sig_type
+        )
+        allowance_response = client.update_balance_allowance(allowance_params)
+        logger.info(f"Allowance update response: {allowance_response}")
+    except Exception as e:
+        logger.error(f"Failed to update allowance: {str(e)}")
+        return execution_results
 
+    for order_arg in order_args.values():
+        try:
             # Create and sign the order
-            signed_order = client.create_order(order_args)
+            signed_order = client.create_order(order_arg)
+            pprint(vars(client))
+
+            # Log order details before execution
+            logger.info(f"Attempting to execute order: {signed_order}")
 
             # Post the order
             resp = client.post_order(signed_order, OrderType.GTC)
@@ -127,14 +130,7 @@ def execute_orders(client, orders):
     # Print summary
     successful_orders = sum(1 for result in execution_results if result[0])
     logger.info(f"\nExecution Summary:")
-    logger.info(f"Successfully executed orders: {successful_orders}/{len(orders)}")
-
-    # Fetch and display the current number of open orders
-    try:
-        open_orders = client.get_open_orders()
-        logger.info(f"Current number of open orders: {len(open_orders)}")
-    except Exception as e:
-        logger.error(f"Failed to fetch open orders: {str(e)}")
+    logger.info(f"Successfully executed orders: {successful_orders}/{len(order_args)}")
 
     return execution_results
 
@@ -144,7 +140,7 @@ def cancel_orders(client, order_ids):
         response = client.cancel_order(order_id)
         print(f"Order {order_id} cancellation result:")
         print(response)
-
+"""
 def main(market, gamma_market, client):
     orders = build_and_print_order(market, gamma_market, client)
     
@@ -161,6 +157,7 @@ def main(market, gamma_market, client):
             print("Invalid action. No orders executed or cancelled.")
 
     return orders
-
+"""
+    
 if __name__ == "__main__":
      pass

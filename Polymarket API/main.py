@@ -1,27 +1,37 @@
 from gamma_clob_query import main as gamma_clob_main
-import logging
+from bid_manager import build_and_print_order, execute_orders
 from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import ApiCreds
 import os
-import dotenv
+import logging
+from dotenv import load_dotenv
+from pprint import pprint
 
-dotenv.load_dotenv()
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-from py_clob_client.client import ClobClient
-
-client = ClobClient(
-    host=os.getenv("POLY_HOST"),
-    key=os.getenv("POLY_PRIVATE_KEY"),
-    chain_id=os.getenv("POLY_CHAIN_ID"),
-    api_key=os.getenv("POLY_API_KEY"),
-    api_secret=os.getenv("POLY_API_SECRET"),
-    api_passphrase=os.getenv("POLY_PASSPHRASE")
-)
-
 def main():
-    # Run the existing gamma_clob_query process
+    # Initialize API credentials
+    apicreds = ApiCreds(
+        api_key=os.getenv("POLY_API_KEY"),
+        api_secret=os.getenv("POLY_API_SECRET"),
+        api_passphrase=os.getenv("POLY_PASSPHRASE")
+    )
+
+    # Initialize ClobClient with API credentials
+    client = ClobClient(
+        host=os.getenv("POLYMARKET_HOST"),
+        key=os.getenv("PRIVATE_KEY"),
+        chain_id=int(os.getenv("CHAIN_ID")),
+        creds=apicreds
+    )
+    pprint(vars(client))
+
+    logger.info("ClobClient initialized successfully.")
+
+    # Run gamma_clob_query to find markets
     matched_markets = gamma_clob_main()
 
     if not matched_markets:
@@ -35,8 +45,19 @@ def main():
         logger.info(f"Token IDs: {market['token_ids']}")
         logger.info("-" * 50)
 
-    # The order execution is now handled within gamma_clob_main()
-    # You can add any additional processing or analysis here if needed
+        # Build and print order for each matched market
+        gamma_market = market['gamma_market']
+        print("Building orders")
+        pprint(vars(client))    
+        orders = build_and_print_order(market, gamma_market, client)
+    
+
+        # Ask user if they want to execute the orders
+        execute = input("Do you want to execute these orders? (yes/no): ").lower().strip()
+        if execute == 'yes':
+            execute_orders(client, orders)
+        else:
+            logger.info("Orders not executed.")
 
 if __name__ == "__main__":
     main()
