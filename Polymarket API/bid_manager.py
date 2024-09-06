@@ -1,6 +1,7 @@
 from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
 from py_clob_client.order_builder.constants import BUY, SELL
 import logging
+from balance_allowance import get_balance_allowances, update_balance_allowance
 from pprint import pprint
 
 logger = logging.getLogger(__name__)
@@ -33,22 +34,51 @@ def build_and_print_order(market, gamma_market, client):
     # Set total order size
     total_order_size = 100.0  # $100 as a float
 
-    # Calculate order sizes
-    order_size_30 = total_order_size * 0.3
-    order_size_70 = total_order_size * 0.7
-
-    # Calculate maker amounts
+    # Calculate maker amount
     best_bid = float(gamma_market.get('bestBid', '0'))
     order_price_min_tick_size = float(market.get('minimum_tick_size', '0.01'))
     max_incentive_spread = float(market.get('max_incentive_spread', '0.03'))
 
     # Initial calculation
+    maker_amount = round(best_bid - (2 * order_price_min_tick_size), 3)
+
+    # Check if order exceeds the maximum allowed difference from best bid
+    min_allowed_price = round(best_bid - max_incentive_spread, 3)
+
+    if maker_amount <= min_allowed_price:
+        print("Order exceeds maximum allowed difference from best bid. Adjusting price.")
+        maker_amount = round(best_bid - (2 * order_price_min_tick_size), 3)
+
+    print(f"Best Bid: {best_bid}")
+    print(f"Maker Amount: {maker_amount}")
+
+    # Build order using OrderArgs
+    order_args = OrderArgs(
+        price=maker_amount,
+        size=total_order_size,
+        side=BUY,
+        token_id=market['token_ids'][0],  # YES token
+        fee_rate_bps=0,  # Assuming no fee, adjust if needed
+        nonce=0,
+        expiration='0' # Set expiration to '0' for GTC orders
+    )
+
+    print("\nOrder arguments built:")
+    print(f"Order Args: {order_args}")
+
+    return {"order_args": order_args}
+
+    # Original code for 2 orders (commented out)
+    """
+    # Calculate order sizes
+    order_size_30 = total_order_size * 0.3
+    order_size_70 = total_order_size * 0.7
+
+    # Calculate maker amounts
     maker_amount_30 = round(best_bid - (2 * order_price_min_tick_size), 3)
     maker_amount_70 = round(best_bid - (3 * order_price_min_tick_size), 3)
 
     # Check if orders exceed the maximum allowed difference from best bid
-    min_allowed_price = round(best_bid - max_incentive_spread, 3)
-
     if maker_amount_30 <= min_allowed_price:
         print("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
         maker_amount_30 = round(best_bid - (2 * order_price_min_tick_size), 3)
@@ -87,50 +117,41 @@ def build_and_print_order(market, gamma_market, client):
     print(f"70% Order Args: {order_args_70}")
 
     return {"order_args_30": order_args_30, "order_args_70": order_args_70}
+    """
 
-def execute_orders(client, order_args):
+def execute_orders(client, order_args, original_market):
     execution_results = []
 
-    # Update balance allowance
+    # Use the original market data which contains both token IDs
+    get_balance_allowances(client, original_market)
+    update_balance_allowance(client, original_market)
+
     try:
-        allowance_params = BalanceAllowanceParams(
-            asset_type=AssetType.COLLATERAL,
-            token_id=None,  # Not needed for COLLATERAL
-            signature_type=client.builder.sig_type
-        )
-        allowance_response = client.update_balance_allowance(allowance_params)
-        logger.info(f"Allowance update response: {allowance_response}")
+        # Create and sign the order
+        signed_order = client.create_order(order_args['order_args'])
+        pprint(vars(client))
+
+        # Log order details before execution
+        logger.info(f"Attempting to execute order: {signed_order}")
+
+        # Post the order
+        resp = client.post_order(signed_order, OrderType.GTC)
+
+        if resp['success']:
+            logger.info(f"✅ Order executed successfully: {resp['orderID']}")
+            execution_results.append((True, resp['orderID']))
+        else:
+            logger.warning(f"⚠️ Order may not have been placed correctly: {resp['errorMsg']}")
+            execution_results.append((False, resp['errorMsg']))
+
     except Exception as e:
-        logger.error(f"Failed to update allowance: {str(e)}")
-        return execution_results
-
-    for order_arg in order_args.values():
-        try:
-            # Create and sign the order
-            signed_order = client.create_order(order_arg)
-            pprint(vars(client))
-
-            # Log order details before execution
-            logger.info(f"Attempting to execute order: {signed_order}")
-
-            # Post the order
-            resp = client.post_order(signed_order, OrderType.GTC)
-
-            if resp['success']:
-                logger.info(f"✅ Order executed successfully: {resp['orderID']}")
-                execution_results.append((True, resp['orderID']))
-            else:
-                logger.warning(f"⚠️ Order may not have been placed correctly: {resp['errorMsg']}")
-                execution_results.append((False, resp['errorMsg']))
-
-        except Exception as e:
-            logger.error(f"❌ Failed to execute order: {str(e)}")
-            execution_results.append((False, str(e)))
+        logger.error(f"❌ Failed to execute order: {str(e)}")
+        execution_results.append((False, str(e)))
 
     # Print summary
     successful_orders = sum(1 for result in execution_results if result[0])
     logger.info(f"\nExecution Summary:")
-    logger.info(f"Successfully executed orders: {successful_orders}/{len(order_args)}")
+    logger.info(f"Successfully executed orders: {successful_orders}/1")
 
     return execution_results
 

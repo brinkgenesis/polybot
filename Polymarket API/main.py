@@ -50,12 +50,11 @@ def main():
         print("Building orders")
         pprint(vars(client))    
         orders = build_and_print_order(market, gamma_market, client)
-    
 
         # Ask user if they want to execute the orders
         execute = input("Do you want to execute these orders? (yes/no): ").lower().strip()
         if execute == 'yes':
-            execute_orders(client, orders)
+            execute_orders(client, orders, market)  # Pass the original market data
         else:
             logger.info("Orders not executed.")
 
