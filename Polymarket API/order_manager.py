@@ -144,6 +144,13 @@ def manage_orders(token_id, best_bid, best_ask, spread, midpoint):
                     orders_to_cancel.append(order_id)
             else:
                 logger.info(f"No orders in the book at price {order_price} for order {order_id}")
+            
+            # New condition: cancel if best bid size in order book is less than $500 in value
+            best_bid_size = get_order_book_size_at_price(order_book, best_bid)
+            best_bid_value = best_bid * best_bid_size
+            if best_bid_value < 500:
+                logger.info(f"Marking order {order_id} for cancellation as best bid size ({best_bid_size}) at price {best_bid} is less than $500 in value (${best_bid_value:.2f})")
+                orders_to_cancel.append(order_id)
     
     # Cancel all orders that meet the conditions
     for order_id in orders_to_cancel:
