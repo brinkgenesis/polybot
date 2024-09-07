@@ -2,11 +2,15 @@ import os
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OrdersScoringParams
 from dotenv import load_dotenv
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-
-def order_scoring(order_id): #add order id as parameter
+def order_scoring(order_id):
     host = os.getenv("POLYMARKET_HOST")
     key = os.getenv("PRIVATE_KEY")
     creds = ApiCreds(
@@ -19,14 +23,14 @@ def order_scoring(order_id): #add order id as parameter
 
     scoring = client.are_orders_scoring(
         OrdersScoringParams(
-            orderIds=[
-                "0xb816482a5187a3d3db49cbaf6fe3ddf24f53e6c712b5a4bf5e01d0ec7b11dabc" 
-                #replace with order id from bid manager. bid manager should print it out and return it
-            ]
+            orderIds=[order_id]
         )
     )
-    print(scoring)
-    print("Done!")
+    logger.info(f"Scoring result: {scoring}")
+    logger.info("Done!")
     return scoring
 
-order_scoring()
+# This function will be called from main.py
+def run_order_scoring(order_id):
+    logger.info(f"Running order scoring for order ID: {order_id}")
+    return order_scoring(order_id)

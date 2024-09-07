@@ -1,5 +1,6 @@
 from gamma_clob_query import main as gamma_clob_main
 from bid_manager import build_and_print_order, execute_orders
+from are_orders_scoring import run_order_scoring
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
 import os
@@ -54,7 +55,17 @@ def main():
         # Ask user if they want to execute the orders
         execute = input("Do you want to execute these orders? (yes/no): ").lower().strip()
         if execute == 'yes':
-            execute_orders(client, orders, market)  # Pass the original market data
+            execution_results = execute_orders(client, orders, market)
+            
+            # Check if we have a successful order execution
+            successful_orders = [result for result in execution_results if result[0]]
+            if successful_orders:
+                order_id = successful_orders[0][1]  # Get the order ID of the first successful order
+                logger.info(f"Running order scoring for order ID: {order_id}")
+                scoring_result = run_order_scoring(order_id)
+                logger.info(f"Order scoring result: {scoring_result}")
+            else:
+                logger.info("No successful orders to score.")
         else:
             logger.info("Orders not executed.")
 

@@ -123,5 +123,14 @@ def get_high_liquidity_markets():
         print(f"Unexpected error: {e}")
         return []
 
+def get_markets_with_rewards(client):
+    markets = client.get_markets()
+    markets_with_rewards = []
+    for market in markets:
+        if market.get('clobRewards') and \
+           any(float(reward.get('rewardsDailyRate', 0)) > 0 for reward in market['clobRewards']):
+            markets_with_rewards.append(market)
+    return markets_with_rewards
+
 if __name__ == "__main__":
     get_high_liquidity_markets()

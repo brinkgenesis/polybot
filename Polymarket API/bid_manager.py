@@ -4,6 +4,8 @@ import logging
 from balance_allowance import get_balance_allowances, update_balance_allowance
 from pprint import pprint
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 def build_and_print_order(market, gamma_market, client):
