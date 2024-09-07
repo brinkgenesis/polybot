@@ -132,5 +132,68 @@ def get_markets_with_rewards(client):
             markets_with_rewards.append(market)
     return markets_with_rewards
 
+def get_top_markets():
+    url = f"{GAMMA_API_URL}/markets"
+    params = {
+        "limit": GAMMA_API_PAGE_LIMIT,
+        "sort": GAMMA_API_SORT_PARAM,
+        "min_rewards_daily_rate": GAMMA_API_MIN_REWARDS_DAILY_RATE
+    }
+    
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    
+    markets = response.json().get('markets', [])
+    
+    filtered_markets = []
+    for market in markets:
+        if len(filtered_markets) >= GAMMA_API_MAX_MARKETS_TO_RETURN:
+            break
+        
+        clob_token_ids = market.get('clob_token_ids', [])
+        if clob_token_ids:
+            filtered_markets.append({
+                'question': market.get('question'),
+                'clob_token_id': clob_token_ids[0],  # Assuming we're interested in the first token
+                'best_bid': market.get('bestBid'),
+                'best_ask': market.get('bestAsk'),
+                'rewards_daily_rate': market.get('clobRewards', {}).get('rewardsDailyRate', 0)
+            })
+    
+    return filtered_markets
+
+def get_gamma_market_data(token_id: str):
+    url = f"{GAMMA_API_URL}/markets"
+    params = {
+        "clob_token_ids": token_id
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if isinstance(data, list):
+            markets = data
+        elif isinstance(data, dict):
+            markets = data.get('markets', [])
+        else:
+            print(f"Unexpected response format for token ID: {token_id}")
+            return None
+        
+        if markets:
+            return markets[0]  # Return the first (and should be only) market
+        else:
+            print(f"No market found for token ID: {token_id}")
+            return None
+    except requests.RequestException as e:
+        print(f"Error fetching data from Gamma API: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        print(f"Response content: {response.text}")
+        return None
+
 if __name__ == "__main__":
     get_high_liquidity_markets()
