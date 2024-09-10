@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OpenOrderParams
 from gamma_market_api import get_gamma_market_data
+from are_orders_scoring import run_order_scoring
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -48,19 +49,32 @@ def get_order_book_size_at_price(order_book, price: float) -> float:
     logger.info(f"No matching price found for {price_str}")
     return 0.0
 
-def get_and_format_order_book(client, token_id: str):
+def get_and_format_order_book(client, token_id: str, best_bid: float, best_ask: float):
     order_book = get_order_book(client, token_id)
     if order_book is None:
         return f"Error fetching order book for token_id {token_id}"
     
     formatted_output = f"Order Book for token_id {token_id}:\n"
-    formatted_output += "Bids:\n"
-    for bid in order_book.bids:
-        formatted_output += f"  Price: {bid.price}, Size: {bid.size}\n"
-    formatted_output += "Asks:\n"
-    for ask in order_book.asks:
-        formatted_output += f"  Price: {ask.price}, Size: {ask.size}\n"
-    
+    formatted_output += "==================================\n"
+
+    # Sort asks in ascending order and take the 10 closest to midpoint
+    sorted_asks = sorted(order_book.asks, key=lambda x: float(x.price))[:10]
+    # Sort bids in descending order and take the 10 closest to midpoint
+    sorted_bids = sorted(order_book.bids, key=lambda x: float(x.price), reverse=True)[:10]
+
+    # Calculate midpoint using the provided best_bid and best_ask
+    midpoint = (best_ask + best_bid) / 2
+
+    # Format asks
+    for ask in reversed(sorted_asks):
+        formatted_output += f"Ask: Price: ${float(ask.price):.2f}, Size: {float(ask.size):.2f}\n"
+
+    formatted_output += f"\n{'Midpoint':^20} ${midpoint:.2f}\n\n"
+
+    # Format bids
+    for bid in sorted_bids:
+        formatted_output += f"Bid: Price: ${float(bid.price):.2f}, Size: {float(bid.size):.2f}\n"
+
     return formatted_output
 
 def print_open_orders(open_orders):
@@ -154,14 +168,16 @@ def manage_orders(client, open_orders):
             orders_to_cancel.append(order_id)
 
     # Cancel all orders that meet the conditions
+    cancelled_orders = []
     for order_id in orders_to_cancel:
         try:
-            client.cancel_order(order_id)
+            client.cancel_orders(order_id)
+            cancelled_orders.append(order_id)
             logger.info(f"Cancelled order {order_id}")
         except Exception as e:
             logger.error(f"Failed to cancel order {order_id}: {str(e)}")
 
-    return orders_to_cancel
+    return cancelled_orders
 
 def main():
     # Initialize the ClobClient with all necessary credentials
@@ -184,7 +200,21 @@ def main():
         unique_token_ids = set(order['asset_id'] for order in open_orders)
         for token_id in unique_token_ids:
             print(f"Processing token_id {token_id}", file=sys.stderr)
-            formatted_order_book = get_and_format_order_book(client, token_id)
+            
+            # Fetch gamma market data
+            gamma_market = get_gamma_market_data(token_id)
+            if gamma_market is None:
+                print(f"Failed to fetch market data for token_id {token_id}.")
+                continue
+
+            best_bid = float(gamma_market.get('bestBid', '0'))
+            best_ask = float(gamma_market.get('bestAsk', '0'))
+            
+            if best_bid == 0 or best_ask == 0 or best_bid >= best_ask:
+                print(f"Invalid best bid or best ask for token_id {token_id}. Skipping this order.")
+                continue
+
+            formatted_order_book = get_and_format_order_book(client, token_id, best_bid, best_ask)
             print(formatted_order_book)
             print("Finished processing order book", file=sys.stderr)
 
