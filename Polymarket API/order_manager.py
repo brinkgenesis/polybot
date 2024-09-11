@@ -6,6 +6,7 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OpenOrderParams
 from gamma_market_api import get_gamma_market_data
 from are_orders_scoring import run_order_scoring
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -118,51 +119,85 @@ def main():
 
     logger.info("ClobClient initialized successfully")
 
-    # Fetch and print open orders for the authenticated wallet
+    # Fetch open orders
+    logger.info("Fetching open orders...")
     open_orders = get_open_orders(client)
-    print_open_orders(open_orders)
+    if not open_orders:
+        logger.info("No open orders found.")
+        return
+    logger.info(f"Found {len(open_orders)} open orders.")
 
-    if open_orders:
-        print("Starting to process order books", file=sys.stderr)
-        unique_token_ids = set(order['asset_id'] for order in open_orders)
-        for token_id in unique_token_ids:
-            print(f"Processing token_id {token_id}", file=sys.stderr)
-            
+    # Process each unique token_id
+    unique_token_ids = set(order['asset_id'] for order in open_orders)
+    logger.info(f"Processing {len(unique_token_ids)} unique token IDs.")
+    for token_id in unique_token_ids:
+        logger.info(f"Processing token_id: {token_id}")
+        try:
             # Fetch gamma market data
             gamma_market = get_gamma_market_data(token_id)
             if gamma_market is None:
-                print(f"Failed to fetch market data for token_id {token_id}.")
+                logger.error(f"Failed to fetch market data for token_id: {token_id}")
                 continue
-
+            
             best_bid = float(gamma_market.get('bestBid', '0'))
             best_ask = float(gamma_market.get('bestAsk', '0'))
             
+            logger.info(f"Gamma market data for token_id {token_id}:")
+            logger.info(f"Best Bid: {best_bid}")
+            logger.info(f"Best Ask: {best_ask}")
+            
             if best_bid == 0 or best_ask == 0 or best_bid >= best_ask:
-                print(f"Invalid best bid or best ask for token_id {token_id}. Skipping this order.")
+                logger.error(f"Invalid best bid or best ask for token_id {token_id}. Skipping this token.")
                 continue
 
             # Fetch order book
             order_book = get_order_book(client, token_id)
             if order_book is None:
-                print(f"Failed to fetch order book for token_id {token_id}.")
+                logger.error(f"Failed to fetch order book for token_id {token_id}")
                 continue
 
             formatted_order_book = get_and_format_order_book(order_book, token_id, best_bid, best_ask)
             print(formatted_order_book)
             print("Finished processing order book", file=sys.stderr)
 
-            # Manage orders for this token_id
+            # Manage orders and get cancelled orders
             cancelled_orders = manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
-            print(f"Cancelled orders for token_id {token_id}: {cancelled_orders}")
+            
+            logger.info(f"Cancelled orders for token_id {token_id}: {cancelled_orders}")
 
-        print("Finished processing all order books", file=sys.stderr)
-    else:
-        print("No open orders to process.")
+            # Reorder cancelled orders
+            for cancelled_order_id in cancelled_orders:
+                logger.info(f"Processing cancelled order: {cancelled_order_id}")
+                cancelled_order = next((order for order in open_orders if order['id'] == cancelled_order_id), None)
+                if cancelled_order:
+                    order_data = {
+                        'side': cancelled_order['side'],
+                        'size': cancelled_order['original_size'],
+                        'token_id': token_id
+                    }
+                    
+                    # Update gamma_market with current best bid/ask
+                    gamma_market['bestBid'] = best_bid
+                    gamma_market['bestAsk'] = best_ask
+
+                    # Reorder the cancelled order
+                    logger.info(f"Reordering cancelled order: {cancelled_order_id}")
+                    result = reorder(client, order_data, token_id, gamma_market, gamma_market)
+                    logger.info(f"Reorder result for cancelled order {cancelled_order_id}: {result}")
+                else:
+                    logger.warning(f"Cancelled order {cancelled_order_id} not found in open orders")
+        
+        except Exception as e:
+            logger.error(f"Error processing token_id {token_id}: {str(e)}")
+
+        # Add a small delay between processing each token to avoid rate limiting
+        time.sleep(1)
+
+    logger.info("Finished processing all token IDs.")
 
 def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book):
     orders_to_cancel = []
     
-    # Set tick_size and max_incentive_spread (you might want to fetch these from the API as well)
     tick_size = 0.01  # Example value, adjust as needed
     max_incentive_spread = 0.03  # Example value, adjust as needed
 
@@ -180,7 +215,8 @@ def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
     order_ids = [order['id'] for order in open_orders if order['asset_id'] == token_id]
 
     # Check scoring for all orders at once
-    scoring_results = run_order_scoring(client, order_ids)  # Pass the client object here
+    logger.info(f"Checking scoring for order IDs: {order_ids}")
+    scoring_results = run_order_scoring(client, order_ids)
 
     for order in open_orders:
         if order['asset_id'] == token_id:
@@ -188,68 +224,78 @@ def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
             order_id = order['id']
             order_size = float(order['original_size'])
             
+            logger.info(f"\nProcessing order: ID: {order_id}, Price: {order_price}, Size: {order_size}")
+            logger.info(f"Market info: Best Bid: {market_info['best_bid']}, Best Ask: {market_info['best_ask']}")
+
             # Check if order is scoring
             is_scoring = scoring_results.get(order_id, False)
-            
-            # Cancel if not scoring
-            if not is_scoring:
-                logger.info(f"Marking order {order_id} for cancellation as it's not scoring")
-                orders_to_cancel.append(order_id)
-                continue  # Skip further checks for this order
+            logger.info(f"Order {order_id} scoring status: {is_scoring}")
 
-            # 1. Cancel if order is outside the reward range
-            if abs(order_price - midpoint) > reward_range:
-                logger.info(f"Marking order {order_id} for cancellation as it's outside the reward range")
-                orders_to_cancel.append(order_id)
-                continue  # Skip further checks for this order
-            
-            # 2. Cancel if order is too far from the best bid/ask
-            if order['side'] == 'bid' and (market_info['best_bid'] - order_price) > max_incentive_spread:
-                logger.info(f"Marking bid {order_id} for cancellation as it's too far from best bid")
-                orders_to_cancel.append(order_id)
-                continue  # Skip further checks for this order
-            
-            elif order['side'] == 'ask' and (order_price - market_info['best_ask']) > max_incentive_spread:
-                logger.info(f"Marking ask {order_id} for cancellation as it's too far from best ask")
-                orders_to_cancel.append(order_id)
-                continue  # Skip further checks for this order
-            
-            # 3. Cancel if order size is >= 50% of order book size at that price
-            order_book_size = get_order_book_size_at_price(order_book, order_price)
-            if order_book_size > 0:
-                order_size_percentage = (order_size / order_book_size) * 100
-                if order_size_percentage >= 50:
-                    logger.info(f"Marking order {order_id} for cancellation as order size is >= 50% of order book size")
-                    orders_to_cancel.append(order_id)
-                    continue  # Skip further checks for this order
-            
-            # 4a. Cancel if bid is at the best bid
-            if order['side'] == 'bid' and order_price == market_info['best_bid']:
-                logger.info(f"Marking bid {order_id} for cancellation as it's at the best bid")
-                orders_to_cancel.append(order_id)
-                continue  # Skip further checks for this order
-            
-            # 4b. Cancel if best bid has less than $500 in order value
+            # Even if the order is scoring, we'll check all conditions
+            should_cancel = False
+            cancel_reasons = []
+
+            # Check all conditions independently
+            logger.info("Checking cancellation conditions:")
+
+            # 1. Reward range check
+            outside_reward_range = abs(order_price - midpoint) > reward_range
+            if outside_reward_range:
+                should_cancel = True
+                cancel_reasons.append("outside the reward range")
+            logger.info(f"1. Outside reward range: {outside_reward_range}")
+
+            # 2. Too far from best bid
+            too_far_from_best_bid = (market_info['best_bid'] - order_price) > max_incentive_spread
+            if too_far_from_best_bid:
+                should_cancel = True
+                cancel_reasons.append("too far from best bid")
+            logger.info(f"2. Too far from best bid: {too_far_from_best_bid}")
+
+            # 3. At the best bid
+            at_best_bid = order_price == market_info['best_bid']
+            if at_best_bid:
+                should_cancel = True
+                cancel_reasons.append("at the best bid")
+            logger.info(f"3. At the best bid: {at_best_bid}")
+
+            # 4. Best bid value less than $500
             best_bid_size = get_order_book_size_at_price(order_book, market_info['best_bid'])
             best_bid_value = market_info['best_bid'] * best_bid_size
-            if best_bid_value < 500:
-                logger.info(f"Marking order {order_id} for cancellation as best bid value  is less than $500")
+            best_bid_value_low = best_bid_value < 500
+            if best_bid_value_low:
+                should_cancel = True
+                cancel_reasons.append("best bid value is less than $500")
+            logger.info(f"4. Best bid value < $500: {best_bid_value_low}")
+
+            # 5. Order book size check
+            order_book_size = get_order_book_size_at_price(order_book, order_price)
+            order_size_percentage = (order_size / order_book_size) * 100 if order_book_size > 0 else 0
+            order_size_too_large = order_size_percentage >= 50
+            if order_size_too_large:
+                should_cancel = True
+                cancel_reasons.append("order size is >= 50% of order book size")
+            logger.info(f"5. Order size >= 50% of order book size: {order_size_too_large}")
+
+            # Final decision
+            if should_cancel:
+                logger.info(f"Marking order {order_id} for cancellation: {', '.join(cancel_reasons)}")
+                if is_scoring:
+                    logger.info(f"Note: Order {order_id} was scoring, but is being cancelled due to meeting cancellation criteria")
                 orders_to_cancel.append(order_id)
-                continue  # Skip further checks for this order
+            else:
+                logger.info(f"Order {order_id} does not meet any cancellation criteria")
 
     # Cancel all orders that meet the conditions
     if orders_to_cancel:
         try:
             client.cancel_orders(orders_to_cancel)
-            cancelled_orders = orders_to_cancel
-            logger.info(f"Cancelled orders: {cancelled_orders}")
+            logger.info(f"Cancelled orders: {orders_to_cancel}")
         except Exception as e:
             logger.error(f"Failed to cancel orders: {str(e)}")
-            cancelled_orders = []
-    else:
-        cancelled_orders = []
+            orders_to_cancel = []
 
-    return cancelled_orders
+    return orders_to_cancel
 
 if __name__ == "__main__":
     main()
