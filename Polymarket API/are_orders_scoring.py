@@ -1,6 +1,6 @@
 import os
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrdersScoringParams
+from py_clob_client.clob_types import OrderScoringParams, OrdersScoringParams
 from dotenv import load_dotenv
 import logging
 
@@ -10,27 +10,35 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-def order_scoring(order_id):
-    host = os.getenv("POLYMARKET_HOST")
-    key = os.getenv("PRIVATE_KEY")
-    creds = ApiCreds(
-        api_key=os.getenv("POLY_API_KEY"),
-        api_secret=os.getenv("POLY_SECRET"),
-        api_passphrase=os.getenv("POLY_PASS_PHRASE"),
-    )
-    chain_id = os.getenv("CHAIN_ID")
-    client = ClobClient(host, key=key, chain_id=chain_id, creds=creds)
-
-    scoring = client.are_orders_scoring(
-        OrdersScoringParams(
-            orderIds=[order_id]
+def is_order_scoring(client, order_id):
+    logger.info(f"Checking scoring for order ID: {order_id}")
+    try:
+        scoring = client.is_order_scoring(
+            OrderScoringParams(orderId=order_id)
         )
-    )
-    logger.info(f"Scoring result: {scoring}")
-    logger.info("Done!")
-    return scoring
+        return scoring.scoring if scoring else False
+    except Exception as e:
+        logger.error(f"Error in is_order_scoring: {str(e)}")
+        return False
 
-# This function will be called from main.py
-def run_order_scoring(order_id):
-    logger.info(f"Running order scoring for order ID: {order_id}")
-    return order_scoring(order_id)
+def are_orders_scoring(client, order_ids):
+    logger.info(f"Checking scoring for order IDs: {order_ids}")
+    try:
+        scoring = client.are_orders_scoring(
+            OrdersScoringParams(orderIds=order_ids)
+        )
+        # Assuming scoring is already a dictionary of boolean values
+        return scoring
+    except Exception as e:
+        logger.error(f"Error in are_orders_scoring: {str(e)}")
+        return {order_id: False for order_id in order_ids}
+
+# This function will be called from order_manager.py
+def run_order_scoring(client, order_ids):
+    if isinstance(order_ids, str):
+        return is_order_scoring(client, order_ids)
+    elif isinstance(order_ids, list):
+        return are_orders_scoring(client, order_ids)
+    else:
+        logger.error(f"Invalid input type for order_ids: {type(order_ids)}")
+        return False
