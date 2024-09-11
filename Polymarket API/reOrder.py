@@ -1,12 +1,13 @@
 import os
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient, ApiCreds
-from py_clob_client.clob_types import OrderArgs, BUY, SELL, OpenOrderParams
+from py_clob_client.clob_types import OrderArgs, OpenOrderParams
 from limitOrder import execute_order
 from order_manager import manage_orders, get_open_orders, get_order_book  # Add this import
 import logging
 from pprint import pprint   
 from gamma_market_api import get_gamma_market_data
+import time
 
 load_dotenv()
 
@@ -103,16 +104,21 @@ def main():
     logger.info("ClobClient initialized successfully")
 
     # Fetch open orders
+    logger.info("Fetching open orders...")
     open_orders = get_open_orders(client)
     if not open_orders:
         logger.info("No open orders found.")
         return
+    logger.info(f"Found {len(open_orders)} open orders.")
 
     # Process each unique token_id
     unique_token_ids = set(order['asset_id'] for order in open_orders)
+    logger.info(f"Processing {len(unique_token_ids)} unique token IDs.")
     for token_id in unique_token_ids:
+        logger.info(f"Processing token_id: {token_id}")
         try:
             # Fetch gamma market data
+            logger.info(f"Fetching gamma market data for token_id: {token_id}")
             gamma_market = get_gamma_market_data(token_id)
             if gamma_market is None:
                 logger.error(f"Failed to fetch market data for token_id: {token_id}")
@@ -120,22 +126,27 @@ def main():
             
             best_bid = float(gamma_market.get('bestBid', '0'))
             best_ask = float(gamma_market.get('bestAsk', '0'))
+            logger.info(f"Best bid: {best_bid}, Best ask: {best_ask}")
             
             if best_bid == 0 or best_ask == 0 or best_bid >= best_ask:
                 logger.error(f"Invalid best bid or best ask for token_id {token_id}. Skipping this token.")
                 continue
 
             # Fetch order book
+            logger.info(f"Fetching order book for token_id: {token_id}")
             order_book = get_order_book(client, token_id)
             if order_book is None:
                 logger.error(f"Failed to fetch order book for token_id {token_id}")
                 continue
 
             # Manage orders and get cancelled orders
+            logger.info(f"Managing orders for token_id: {token_id}")
             cancelled_orders = manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
+            logger.info(f"Cancelled orders for token_id {token_id}: {cancelled_orders}")
             
             # Reorder cancelled orders
             for cancelled_order_id in cancelled_orders:
+                logger.info(f"Processing cancelled order: {cancelled_order_id}")
                 cancelled_order = next((order for order in open_orders if order['id'] == cancelled_order_id), None)
                 if cancelled_order:
                     order_data = {
@@ -149,6 +160,7 @@ def main():
                     gamma_market['bestAsk'] = best_ask
 
                     # Reorder the cancelled order
+                    logger.info(f"Reordering cancelled order: {cancelled_order_id}")
                     result = reorder(client, order_data, token_id, gamma_market, gamma_market)
                     logger.info(f"Reorder result for cancelled order {cancelled_order_id}: {result}")
                 else:
@@ -156,6 +168,9 @@ def main():
         
         except Exception as e:
             logger.error(f"Error processing token_id {token_id}: {str(e)}")
+        
+        # Add a small delay between processing each token to avoid rate limiting
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
