@@ -201,6 +201,7 @@ def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
             if abs(order_price - midpoint) > reward_range:
                 logger.info(f"Marking order {order_id} for cancellation as it's outside the reward range")
                 orders_to_cancel.append(order_id)
+                continue  # Skip further checks for this order
             
             # 2. Cancel if order is too far from the best bid/ask
             if order['side'] == 'bid' and (market_info['best_bid'] - order_price) > max_incentive_spread:
@@ -209,6 +210,7 @@ def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
             elif order['side'] == 'ask' and (order_price - market_info['best_ask']) > max_incentive_spread:
                 logger.info(f"Marking ask {order_id} for cancellation as it's too far from best ask")
                 orders_to_cancel.append(order_id)
+                continue  # Skip further checks for this order
             
             # 3. Cancel if order size is >= 50% of order book size at that price
             order_book_size = get_order_book_size_at_price(order_book, order_price)
@@ -217,18 +219,21 @@ def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
                 if order_size_percentage >= 50:
                     logger.info(f"Marking order {order_id} for cancellation as order size is >= 50% of order book size")
                     orders_to_cancel.append(order_id)
+                    continue  # Skip further checks for this order
             
             # 4a. Cancel if bid is at the best bid
             if order['side'] == 'bid' and order_price == market_info['best_bid']:
                 logger.info(f"Marking bid {order_id} for cancellation as it's at the best bid")
                 orders_to_cancel.append(order_id)
+                continue  # Skip further checks for this order
             
             # 4b. Cancel if best bid has less than $500 in order value
             best_bid_size = get_order_book_size_at_price(order_book, market_info['best_bid'])
             best_bid_value = market_info['best_bid'] * best_bid_size
             if best_bid_value < 500:
-                logger.info(f"Marking order {order_id} for cancellation as best bid value is less than $500")
+                logger.info(f"Marking order {order_id} for cancellation as best bid value  is less than $500")
                 orders_to_cancel.append(order_id)
+                continue  # Skip further checks for this order
 
     # Cancel all orders that meet the conditions
     if orders_to_cancel:
