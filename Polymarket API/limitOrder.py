@@ -1,3 +1,4 @@
+from logger_config import main_logger as logger
 import os
 from decimal import Decimal
 from py_clob_client.client import ClobClient, RequestArgs, Optional, order_to_json
@@ -8,6 +9,7 @@ from config import HOST, CHAIN_ID, PRIVATE_KEY
 from pprint import pprint
 import logging
 from py_clob_client.exceptions import PolyApiException
+from utils import shorten_id
 
 # Configure the logger
 class CustomFormatter(logging.Formatter):
@@ -58,29 +60,37 @@ def build_order(client, token_id, size, price, side):
         side=side,
         token_id=token_id
     ) 
-    print_section("Building Order", f"Building order with args: {order_args}")
+    logger.info(f"Building Order: Building order with args: {order_args}")
     return client.create_order(order_args)
 #,PartialCreateOrderOptions(
     #neg_risk=True))
 
+def format_section(title):
+    return f"\n{'=' * 50}\n{title}\n{'=' * 50}"
+
 def execute_order(client, signed_order):
     try:
-        print_section("Order Execution", "Starting order execution process")
-        logger.info(f"Attempting to execute order: {signed_order}")
+        logger.info(format_section("Order Execution"))
+        logger.info(f"Attempting to execute order: {shorten_id(str(signed_order))}")
 
-        logger.info("\nAttempting to post order")
+        logger.info("Posting order...")
         resp = client.post_order(signed_order, OrderType.GTC)
         logger.info("Order posted, processing response")
 
         if resp['success']:
-            print_section("Execution Result", f"✅ Order executed successfully: {resp['orderID']}")
+            logger.info(format_section("Execution Result"))
+            logger.info(f"✅ Order executed successfully")
+            logger.info(f"Order ID: {shorten_id(resp['orderID'])}")
             return True, resp['orderID']
         else:
-            print_section("Execution Result", f"⚠️ Order may not have been placed correctly: {resp['errorMsg']}")
+            logger.info(format_section("Execution Result"))
+            logger.info(f"⚠️ Order may not have been placed correctly")
+            logger.info(f"Error: {resp['errorMsg']}")
             return False, resp['errorMsg']
 
     except Exception as e:
-        print_section("Execution Error", f"❌ Failed to execute order: {str(e)}")
+        logger.error(format_section("Execution Error"))
+        logger.error(f"❌ Failed to execute order: {str(e)}")
         return False, str(e)
 
 def main():
