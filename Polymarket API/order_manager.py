@@ -6,6 +6,7 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OpenOrderParams
 from gamma_market_api import get_gamma_market_data
 from are_orders_scoring import run_order_scoring
+from reOrder import reorder
 import time
 
 # Configure logging
