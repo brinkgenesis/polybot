@@ -207,6 +207,8 @@ def manage_orders(client, open_orders, token_id, best_bid, best_ask, order_book)
             if order['side'] == 'bid' and (market_info['best_bid'] - order_price) > max_incentive_spread:
                 logger.info(f"Marking bid {order_id} for cancellation as it's too far from best bid")
                 orders_to_cancel.append(order_id)
+                continue  # Skip further checks for this order
+            
             elif order['side'] == 'ask' and (order_price - market_info['best_ask']) > max_incentive_spread:
                 logger.info(f"Marking ask {order_id} for cancellation as it's too far from best ask")
                 orders_to_cancel.append(order_id)
