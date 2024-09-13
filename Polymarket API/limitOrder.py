@@ -1,4 +1,5 @@
 import os
+import asyncio
 from decimal import Decimal
 from py_clob_client.client import ClobClient, RequestArgs, Optional, order_to_json
 from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds, PartialCreateOrderOptions, CreateOrderOptions
@@ -51,7 +52,7 @@ def get_order_details():
         raise ValueError("Invalid side. Must be BUY or SELL.")
     return token_id, size, price, side
 
-def build_order(client, token_id, size, price, side):
+async def build_order(client, token_id, size, price, side):
     order_args = OrderArgs(
         price=price,
         size=size,
@@ -60,10 +61,8 @@ def build_order(client, token_id, size, price, side):
     ) 
     print_section("Building Order", f"Building order with args: {order_args}")
     return client.create_order(order_args)
-#,PartialCreateOrderOptions(
-    #neg_risk=True))
 
-def execute_order(client, signed_order):
+async def execute_order(client, signed_order):
     try:
         print_section("Order Execution", "Starting order execution process")
         logger.info(f"Attempting to execute order: {signed_order}")
@@ -83,7 +82,7 @@ def execute_order(client, signed_order):
         print_section("Execution Error", f"❌ Failed to execute order: {str(e)}")
         return False, str(e)
 
-def main():
+async def main():
     try:
         # Initialize the ClobClient with all necessary credentials
         client = ClobClient(
@@ -114,14 +113,14 @@ def main():
 
         # Build the order
         try:
-            signed_order = build_order(client, token_id, size, price, side)
+            signed_order = await build_order(client, token_id, size, price, side)
             logger.info("Order built successfully")
         except Exception as e:
             print_section("Order Building Error", f"Failed to build order: {e}")
             return
 
         # Execute the order
-        success, result = execute_order(client, signed_order)
+        success, result = await execute_order(client, signed_order)
 
         if not success:
             print_section("Execution Error", f"Order execution failed. Reason: {result}")
@@ -134,4 +133,4 @@ def main():
         print_section("Unexpected Error", f"An unexpected error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

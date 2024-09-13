@@ -11,6 +11,8 @@ from decimal import Decimal
 import time
 from logger_config import main_logger as logger
 from utils import shorten_id
+from typing import List
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -81,7 +83,16 @@ def print_open_orders(open_orders):
     for order in open_orders:
         logger.info(f"Order ID: {shorten_id(order['id'])}\nAsset ID: {shorten_id(order['asset_id'])}\nSide: {order['side']}\nPrice: {order['price']}\nSize: {order['original_size']}\n---")
 
-def reorder(client, cancelled_order, token_id, market_info):
+async def cancel_orders(client: ClobClient, order_ids: List[str], token_id: str) -> List[str]:
+    try:
+        client.cancel_orders(order_ids)
+        logger.info(f"Cancelled orders: {[shorten_id(order_id) for order_id in order_ids]}")
+        return order_ids
+    except Exception as e:
+        logger.error(f"Failed to cancel orders for token_id {shorten_id(token_id)}: {str(e)}")
+        return []
+
+async def reorder(client, cancelled_order, token_id, market_info):
     # Set total order size
     total_order_size = float(cancelled_order['size'])
 
@@ -114,16 +125,16 @@ def reorder(client, cancelled_order, token_id, market_info):
     results = []
     try:
         # Build and execute 30% order
-        signed_order_30 = build_order(client, token_id, Decimal(str(order_size_30)), Decimal(str(maker_amount_30)), cancelled_order['side'])
+        signed_order_30 = await build_order(client, token_id, Decimal(str(order_size_30)), Decimal(str(maker_amount_30)), cancelled_order['side'])
         logger.info(f"30% Signed Order: {signed_order_30}")
-        result_30 = execute_order(client, signed_order_30)
+        result_30 = await execute_order(client, signed_order_30)
         results.append(result_30)
         logger.info(f"30% order executed: {result_30}")
 
         # Build and execute 70% order
-        signed_order_70 = build_order(client, token_id, Decimal(str(order_size_70)), Decimal(str(maker_amount_70)), cancelled_order['side'])
+        signed_order_70 = await build_order(client, token_id, Decimal(str(order_size_70)), Decimal(str(maker_amount_70)), cancelled_order['side'])
         logger.info(f"70% Signed Order: {signed_order_70}")
-        result_70 = execute_order(client, signed_order_70)
+        result_70 = await execute_order(client, signed_order_70)
         results.append(result_70)
         logger.info(f"70% order executed: {result_70}")
 
@@ -147,7 +158,7 @@ def format_order_info(order_id, price, size):
 def format_market_info(best_bid, best_ask):
     return f"Best Bid: {best_bid}\nBest Ask: {best_ask}"
 
-def main():
+async def main():
     logger.info(format_section("Initializing order_manager.py"))
     logger.info(f"Root logger handlers: {logging.getLogger().handlers}")
     logger.info(f"Main logger handlers: {logger.handlers}")
@@ -257,7 +268,7 @@ def main():
                 }
                 
                 logger.info(f"Reordering cancelled order: {shorten_id(cancelled_order_id)}")
-                result = reorder(client, order_data, token_id, market_info)
+                result = await reorder(client, order_data, token_id, market_info)
                 logger.info(f"Reorder result for cancelled order {shorten_id(cancelled_order_id)}: {result}")
             else:
                 logger.warning(f"Cancelled order {shorten_id(cancelled_order_id)} not found in open orders")
@@ -366,4 +377,4 @@ def manage_orders(client, open_orders, token_id, market_info, order_book):
 
 if __name__ == "__main__":
     limitOrder_logger.parent = logger
-    main()
+    asyncio.run(main())
