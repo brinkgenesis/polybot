@@ -179,10 +179,31 @@ class RiskManager:
         if float(market_info['openInterest']) > self.OPEN_INTEREST_THRESHOLD:
             await self.handle_high_open_interest(token_id)
 
-    async def handle_high_activity(self, token_id):
-        # Implement logic to handle high activity markets
-        # For example, you might want to adjust order sizes or spreads
-        pass
+    async def handle_high_activity(self, token_id: str, order_book: Dict):
+        best_bid_size = float(order_book.bids[0].size) if order_book.bids else 0
+        threshold = 0.5 * best_bid_size  # 50% of best bid size
+        logger.info(f"Handling high activity for token_id {shorten_id(token_id)}")
+
+        open_orders = self.clob_client.get_orders(OpenOrderParams(asset_id=token_id))
+        orders_to_cancel = []
+
+        for order in open_orders:
+            order_size = float(order['size'])
+            # Assuming 'owner' field identifies your orders
+            if order_size > threshold and order['owner'].lower() == self.clob_client.creds.api_key.lower():
+                orders_to_cancel.append(order['id'])
+                logger.info(f"Marking order {shorten_id(order['id'])} for cancellation due to high activity.")
+
+        if orders_to_cancel:
+            try:
+                self.clob_client.cancel_orders(orders_to_cancel)
+                logger.info(f"Cancelled orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+                # Set cooldown to wait for market stabilization
+                self.volatility_cooldown[token_id] = time.time()
+            except Exception as e:
+                logger.error(f"Failed to cancel orders for high activity: {str(e)}")
+        
+        # Optional: Trigger reordering after cooldown in the main monitoring loop
 
     async def handle_inactive_market(self, token_id):
         # Implement logic to handle inactive markets
