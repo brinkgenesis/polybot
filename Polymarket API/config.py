@@ -47,5 +47,7 @@ POLYMARKET_PROXY_ADDRESS = os.getenv("POLYMARKET_PROXY_ADDRESS")
 # Market IDs and User Addresses to monitor (replace with actual values)
 MARKET_IDS = ["0xMarketId1", "0xMarketId2"]
 USER_ADDRESSES = ["0xUserAddress1", "0xUserAddress2"]
+TICK_SIZE = 0.01  # Adjust this value as needed
+MAX_INCENTIVE_SPREAD = 0.03  # Adjust this value as needed
 
 # Other configuration variables can be added here

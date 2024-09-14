@@ -1,14 +1,8 @@
+from logger_config import main_logger as logger
 import os
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderScoringParams, OrdersScoringParams
 from dotenv import load_dotenv
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
-logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 def is_order_scoring(client, order_id):
     logger.info(f"Checking scoring for order ID: {order_id}")
