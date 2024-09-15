@@ -4,6 +4,8 @@ from gql import gql, Client
 from gql.transport.websockets import WebsocketsTransport
 import logging
 import requests
+import certifi
+import ssl
 
 class SubgraphClient:
     def __init__(self, url: str):
@@ -12,7 +14,8 @@ class SubgraphClient:
 
         :param url: The WebSocket URL of the subgraph.
         """
-        transport = WebsocketsTransport(url=url)
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        transport = WebsocketsTransport(url=url, ssl=ssl_context)
         self.client = Client(transport=transport, fetch_schema_from_transport=True)
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -62,19 +65,17 @@ class SubgraphClient:
             self.logger.error(f"Error fetching historical trades for market {market_id}: {e}", exc_info=True)
             return []
 
-    async def subscribe_to_events(self, subscription_query: str, variables: Dict[str, Any], callback: Callable[[Dict], None]):
+    async def subscribe_to_events(self, subscription_query, variables=None):
         """
         Generic method to subscribe to events.
 
         :param subscription_query: The GraphQL subscription query.
         :param variables: The variables for the subscription.
-        :param callback: The function to call when an event is received.
         """
-        try:
-            async for result in self.client.subscribe(gql(subscription_query), variable_values=variables):
-                callback(result)
-        except Exception as e:
-            self.logger.error(f"Error in event subscription: {e}", exc_info=True)
+        async with self.client as session:
+            subscription = gql(subscription_query)
+            async for result in session.subscribe(subscription, variable_values=variables):
+                yield result
 
     def get_markets(self) -> List[Dict]:
         """

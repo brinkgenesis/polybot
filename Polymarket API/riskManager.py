@@ -2,6 +2,7 @@ import asyncio
 import time
 import config
 from datetime import datetime
+import os
 from dotenv import load_dotenv
 from typing import Callable, Dict
 from gql import gql
@@ -14,6 +15,7 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
 from logger_config import main_logger
 
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -24,7 +26,7 @@ class RiskManager:
     def __init__(self, clob_client: 'ClobClient', subgraph_client: SubgraphClient):
         self.clob_client = clob_client
         self.subgraph_client = subgraph_client
-        self.volatility_cooldown = {}
+        self.volatility_cooldown: Dict[str, float] = {}
         self.logger = logger
 
         # RiskManager parameters
@@ -61,34 +63,12 @@ class RiskManager:
             "minAmount": min_total_order
         }
 
-        async def event_handler(event):
-            trade = event.get('trades', [])[0]  # Assuming single trade per event
-            if not trade:
-                return
-
-            trade_type = trade.get('type')
-            trade_amount = float(trade.get('tradeAmount', 0))
-            outcome_index = int(trade.get('outcomeIndex', 0))
-            outcome_tokens_amount = float(trade.get('outcomeTokensAmount', 0))
-
-            self.logger.info(
-                f"Large Trade Detected: Trade ID {trade.get('id')}, Market {shorten_id(token_id)}, "
-                f"Type: {trade_type}, Trade Amount: {trade_amount}, "
-                f"Outcome Index: {outcome_index}, Outcome Tokens Amount: {outcome_tokens_amount}"
-            )
-
-            # Check if the trade meets the specified conditions
-            if trade_amount > min_total_order:
+        async for trade in self.subgraph_client.subscribe_to_events(subscription_query, variables):
+            if float(trade.get('tradeAmount', 0)) > min_total_order:
                 self.logger.warning(
                     f"Trade ID {trade.get('id')} exceeds thresholds. Initiating risk mitigation."
                 )
                 await self.handle_large_trade(trade)
-
-        await self.subgraph_client.subscribe_to_events(
-            subscription_query=subscription_query,
-            variables=variables,
-            callback=event_handler
-        )
 
     async def handle_large_trade(self, trade: Dict):
         """
@@ -208,12 +188,27 @@ class RiskManager:
             self.logger.error(f"Error in main RiskManager loop: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    # Initialize ClobClient and SubgraphClient here
-    clob_client = ClobClient(...)  # Add necessary parameters
-    subgraph_client = SubgraphClient(...)  # Add necessary parameters
     
-    risk_manager = RiskManager(clob_client, subgraph_client)
-    asyncio.run(risk_manager.main())
+    async def run():
+        clob_client = ClobClient(
+            host=config.HOST,
+            chain_id=config.CHAIN_ID,
+            key=config.PRIVATE_KEY,
+            signature_type=2,  # Example signature type
+            funder=config.POLYMARKET_PROXY_ADDRESS
+        )
+        clob_client.set_api_creds(ApiCreds(
+            api_key=config.POLY_API_KEY,
+            api_secret=config.POLY_API_SECRET,
+            api_passphrase=config.POLY_PASSPHRASE
+        ))
+
+        subgraph_client = SubgraphClient(config.SUBGRAPH_URL)
+        
+        risk_manager = RiskManager(clob_client, subgraph_client)
+        await risk_manager.main()
+
+    asyncio.run(run())
 
 
 
