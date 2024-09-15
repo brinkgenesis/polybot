@@ -15,8 +15,8 @@ async def main():
     )
     clob_client.set_api_creds(clob_client.create_or_derive_api_creds())
 
-    # Initialize SubgraphClient
-    subgraph_client = SubgraphClient(config.SUBGRAPH_URL)
+    # Initialize SubgraphClient with HTTP URL
+    subgraph_client = SubgraphClient(config.SUBGRAPH_HTTP_URL)
     
     # Create RiskManager instance
     risk_manager = RiskManager(clob_client, subgraph_client)

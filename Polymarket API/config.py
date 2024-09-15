@@ -13,8 +13,7 @@ MAX_MARKETS = 10
 YIELD_THRESHOLD = 0.02  # 2% yield threshold
 
 # Subgraph settings
-SUBGRAPH_URL = 'wss://api.thegraph.com/subgraphs/name/polymarket/matic-markets/graphql'
-SUBGRAPH_HTTP_URL = 'https://api.thegraph.com/subgraphs/name/polymarket/matic-markets/graphql'
+SUBGRAPH_HTTP_URL = 'https://api.thegraph.com/subgraphs/name/polymarket/matic-markets'
 
 # RiskManager parameters
 RISK_VOLUME_THRESHOLD = 1000

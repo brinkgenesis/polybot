@@ -10,6 +10,8 @@ from gql import gql
 from utils import shorten_id
 from order_manager import cancel_orders, reorder, get_order_book, manage_orders
 from subgraph_client import SubgraphClient
+from clob_websocket_client import ClobWebsocketClient
+from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OpenOrderParams, OrderType, OrderArgs
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
@@ -23,9 +25,10 @@ load_dotenv()
 logger = main_logger
 
 class RiskManager:
-    def __init__(self, clob_client: 'ClobClient', subgraph_client: SubgraphClient):
+    def __init__(self, clob_client: ClobClient, subgraph_client: SubgraphClient):
         self.clob_client = clob_client
         self.subgraph_client = subgraph_client
+        self.clob_ws_client = ClobWebsocketClient(clob_client)
         self.volatility_cooldown: Dict[str, float] = {}
         self.logger = logger
 
@@ -164,18 +167,16 @@ class RiskManager:
 
     async def main(self):
         try:
+            # Connect to CLOB WebSocket
+            self.clob_ws_client.connect()
+
             # Fetch open orders
             open_orders = self.clob_client.get_orders(OpenOrderParams())
             token_ids = list({order['asset_id'] for order in open_orders})
             
-            # Subscribe to large trades for markets with open orders
+            # Subscribe to market channels for markets with open orders
             for token_id in token_ids:
-                asyncio.create_task(
-                    self.subscribe_to_large_trades(
-                        token_id=token_id,
-                        min_total_order=self.VOLUME_THRESHOLD
-                    )
-                )
+                self.clob_ws_client.subscribe_to_market_channel(token_id)
 
             # Start monitoring active orders
             asyncio.create_task(self.monitor_active_orders())
@@ -203,7 +204,7 @@ if __name__ == "__main__":
             api_passphrase=config.POLY_PASSPHRASE
         ))
 
-        subgraph_client = SubgraphClient(config.SUBGRAPH_URL)
+        subgraph_client = SubgraphClient(config.SUBGRAPH_HTTP_URL)
         
         risk_manager = RiskManager(clob_client, subgraph_client)
         await risk_manager.main()
