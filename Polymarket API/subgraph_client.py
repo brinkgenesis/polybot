@@ -2,6 +2,7 @@ import asyncio
 from typing import List, Dict, Any, Callable
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
+from gql.transport.aiohttp import AIOHTTPTransport
 import logging
 import requests
 import certifi
@@ -14,9 +15,24 @@ class SubgraphClient:
 
         :param url: The HTTP URL of the subgraph.
         """
-        self.transport = RequestsHTTPTransport(url=url)
+        self.transport = AIOHTTPTransport(url=url)
         self.client = Client(transport=self.transport, fetch_schema_from_transport=True)
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    async def subscribe_to_events(self, subscription_query: str, variables: Dict, callback: callable):
+        """
+        Subscribes to GraphQL events using the provided subscription query and variables.
+
+        :param subscription_query: The GraphQL subscription query string.
+        :param variables: A dictionary of variables for the subscription query.
+        :param callback: A callable to handle each incoming event.
+        """
+        try:
+            async with self.client.subscribe(subscription_query, variable_values=variables) as subscription:
+                async for event in subscription:
+                    await callback(event)
+        except Exception as e:
+            self.logger.error(f"Error subscribing to events: {e}", exc_info=True)
 
     async def get_historical_trades(self, market_id: str, start_time: int, end_time: int, limit: int = 1000) -> List[Dict]:
         """
@@ -43,9 +59,10 @@ class SubgraphClient:
             id
             timestamp
             market
-            outcome
-            amount
-            price
+            type
+            tradeAmount
+            outcomeIndex
+            outcomeTokensAmount
           }
         }
         ''')
@@ -85,4 +102,5 @@ class SubgraphClient:
         except Exception as e:
             self.logger.error(f"Error fetching markets: {e}", exc_info=True)
             return []
-
+        
+        

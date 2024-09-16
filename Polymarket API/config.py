@@ -16,7 +16,7 @@ YIELD_THRESHOLD = 0.02  # 2% yield threshold
 SUBGRAPH_HTTP_URL = 'https://api.thegraph.com/subgraphs/name/polymarket/matic-markets'
 
 # RiskManager parameters
-RISK_VOLUME_THRESHOLD = 1000
+RISK_VOLUME_THRESHOLD = 999  # Dollar amount threshold
 RISK_VOLATILITY_COOLDOWN_PERIOD = 600  # 10 minutes in seconds
 RISK_INACTIVITY_THRESHOLD = 86400  # 1 day in seconds
 RISK_OPEN_INTEREST_THRESHOLD = 1000000
@@ -25,7 +25,7 @@ RISK_HIGH_ACTIVITY_THRESHOLD_PERCENT = 50  # 50%
 # RiskManager intervals and delays
 RISK_FETCH_RETRY_DELAY = 60
 RISK_ORDER_BOOK_FETCH_DELAY = 1
-RISK_MONITOR_INTERVAL = 60
+RISK_MONITOR_INTERVAL = 60  # Monitor every minute
 RISK_CORE_MANAGEMENT_INTERVAL = 3600
 
 # Parameters for gamma_market_api.py
@@ -45,8 +45,8 @@ POLY_PASSPHRASE = os.getenv("POLY_PASSPHRASE")
 POLYMARKET_PROXY_ADDRESS = os.getenv("POLYMARKET_PROXY_ADDRESS")
 
 # Market IDs and User Addresses to monitor (replace with actual values)
-MARKET_IDS = ["0xMarketId1", "0xMarketId2"]
-USER_ADDRESSES = ["0xUserAddress1", "0xUserAddress2"]
+MARKET_IDS = ["0xMarketId1", "0xMarketId2"]  # Example placeholder values
+USER_ADDRESSES = ["0xUserAddress1", "0xUserAddress2"]  # Example placeholder values
 TICK_SIZE = 0.01  # Adjust this value as needed
 MAX_INCENTIVE_SPREAD = 0.03  # Adjust this value as needed
 
