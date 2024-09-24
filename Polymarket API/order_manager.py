@@ -11,39 +11,35 @@ from decimal import Decimal
 import time
 from logger_config import main_logger as logger
 from utils import shorten_id
-from typing import List
-import asyncio
-from async_clob_client import AsyncClobClient
-from typing import Dict, Any
+from typing import List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Load environment variables
 load_dotenv()
 
 POLYMARKET_HOST = os.getenv("POLYMARKET_HOST")
 
-async def get_market_info(clob_client: AsyncClobClient, token_id: str) -> Dict[str, Any]:
-    """
-    Fetches market information for a given token ID.
+# Initialize ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=10)  # Adjust the number of threads as needed
 
-    :param clob_client: An instance of AsyncClobClient.
-    :param token_id: The token ID for which to fetch market information.
-    :return: A dictionary containing market information.
+def get_market_info_sync(clob_client: ClobClient, token_id: str) -> Dict[str, Any]:
+    """
+    Synchronously fetches market information for a given token ID.
     """
     try:
-        market_info = await clob_client.get_market_info(token_id)
+        market_info = clob_client.get_market_info(token_id)
         logger.info(f"Fetched market info for token ID {token_id}: {market_info}")
         return market_info
     except Exception as e:
         logger.error(f"Error fetching market info for token ID {token_id}: {e}", exc_info=True)
         return {}
 
-
-async def get_order_book(clob_client: AsyncClobClient, token_id: str) -> Dict:
+def get_order_book_sync(clob_client: ClobClient, token_id: str) -> Dict:
     """
-    Fetches the order book for a given token ID.
+    Synchronously fetches the order book for a given token ID.
     """
     try:
-        order_book = await clob_client.get_order_book(token_id)
+        order_book = clob_client.get_order_book(token_id)
         logger.info(f"Fetched order book for token ID {token_id}.")
         return order_book
     except Exception as e:
@@ -52,10 +48,12 @@ async def get_order_book(clob_client: AsyncClobClient, token_id: str) -> Dict:
 
 def get_open_orders(client):
     try:
-        return client.get_orders(OpenOrderParams())
+        open_orders = client.get_orders(OpenOrderParams())
+        logger.info(f"Retrieved {len(open_orders)} open orders.")
+        return open_orders
     except Exception as e:
         logger.error(f"Error fetching open orders: {str(e)}")
-        return None
+        return []
 
 def get_order_book_size_at_price(order_book, price: float) -> float:
     price_str = str(price)
@@ -107,95 +105,65 @@ def print_open_orders(open_orders):
     for order in open_orders:
         logger.info(f"Order ID: {shorten_id(order['id'])}\nAsset ID: {shorten_id(order['asset_id'])}\nSide: {order['side']}\nPrice: {order['price']}\nSize: {order['original_size']}\n---")
 
-async def cancel_orders(client: AsyncClobClient, order_ids: List[str], token_id: str) -> List[str]:
+def cancel_orders(client: ClobClient, order_ids: List[str], token_id: str) -> List[str]:
     try:
-        await client.cancel_orders(order_ids)
+        client.cancel_orders(order_ids)
         logger.info(f"Cancelled orders: {[shorten_id(order_id) for order_id in order_ids]}")
         return order_ids
     except Exception as e:
         logger.error(f"Failed to cancel orders for token_id {shorten_id(token_id)}: {str(e)}")
         return []
 
-async def reorder(client: AsyncClobClient, cancelled_order: dict, token_id: str, market_info: dict) -> List[str]:
-    """
-    Reorders a cancelled order by splitting it into two new orders (30% and 70%).
+def reorder(client, cancelled_order, token_id, market_info):
+    # Set total order size
+    total_order_size = float(cancelled_order['size'])
 
-    :param client: Instance of AsyncClobClient.
-    :param cancelled_order: The order that was cancelled.
-    :param token_id: The token ID associated with the order.
-    :param market_info: Market information including best_bid, best_ask, tick_size, and max_incentive_spread.
-    :return: List of new order IDs.
-    """
+    # Calculate order sizes
+    order_size_30 = total_order_size * 0.3
+    order_size_70 = total_order_size * 0.7
+
+    # Calculate maker amounts
+    best_bid = market_info['best_bid']
+    tick_size = market_info['tick_size']
+    max_incentive_spread = market_info['max_incentive_spread']
+
+    maker_amount_30 = round(best_bid - (1 * tick_size), 3)
+    maker_amount_70 = round(best_bid - (2 * tick_size), 3)
+
+    # Check if orders exceed the maximum allowed difference from best bid
+    min_allowed_price = best_bid - max_incentive_spread
+    if maker_amount_30 < min_allowed_price:
+        logger.info("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
+        maker_amount_30 = min_allowed_price
+    if maker_amount_70 < min_allowed_price:
+        logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
+        maker_amount_70 = min_allowed_price
+
+    logger.info(f"Best Bid: {best_bid}")
+    logger.info(f"Maker Amount 30%: {maker_amount_30}")
+    logger.info(f"Maker Amount 70%: {maker_amount_70}")
+
+    # Build and execute orders
+    results = []
     try:
-        # Set total order size
-        total_order_size = float(cancelled_order['size'])
+        # Build and execute 30% order
+        signed_order_30 = build_order(client, token_id, Decimal(str(order_size_30)), Decimal(str(maker_amount_30)), cancelled_order['side'])
+        logger.info(f"30% Signed Order: {signed_order_30}")
+        result_30 = execute_order(client, signed_order_30)
+        results.append(result_30)
+        logger.info(f"30% order executed: {result_30}")
 
-        # Calculate order sizes
-        order_size_30 = total_order_size * 0.3
-        order_size_70 = total_order_size * 0.7
-
-        # Calculate maker amounts
-        best_bid = market_info['best_bid']
-        tick_size = market_info['tick_size']
-        max_incentive_spread = market_info['max_incentive_spread']
-
-        maker_amount_30 = round(best_bid - (1 * tick_size), 3)
-        maker_amount_70 = round(best_bid - (2 * tick_size), 3)
-
-        # Check if orders exceed the maximum allowed difference from best bid
-        min_allowed_price = best_bid - max_incentive_spread
-        if maker_amount_30 < min_allowed_price:
-            logger.info("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
-            maker_amount_30 = min_allowed_price
-        if maker_amount_70 < min_allowed_price:
-            logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
-            maker_amount_70 = min_allowed_price
-
-        logger.info(f"Best Bid: {best_bid}")
-        logger.info(f"Maker Amount 30%: {maker_amount_30}")
-        logger.info(f"Maker Amount 70%: {maker_amount_70}")
-
-        # Check active orders to ensure only two are retained
-        active_orders = await client.get_orders(OpenOrderParams(asset_id=token_id))
-        if len(active_orders) >= 2:
-            logger.info(f"Already have {len(active_orders)} active orders for token {token_id}. Skipping reorder.")
-            return []
-
-        # Build and execute orders
-        new_order_ids = []
-        try:
-            # Build and execute 30% order
-            signed_order_30 = await client.build_order(
-                token_id=token_id,
-                size=Decimal(str(order_size_30)),
-                price=Decimal(str(maker_amount_30)),
-                side=cancelled_order['side']
-            )
-            logger.info(f"30% Signed Order: {signed_order_30}")
-            result_30 = await client.execute_order(signed_order_30)
-            new_order_ids.append(result_30)
-            logger.info(f"30% order executed: {result_30}")
-
-            # Build and execute 70% order
-            signed_order_70 = await client.build_order(
-                token_id=token_id,
-                size=Decimal(str(order_size_70)),
-                price=Decimal(str(maker_amount_70)),
-                side=cancelled_order['side']
-            )
-            logger.info(f"70% Signed Order: {signed_order_70}")
-            result_70 = await client.execute_order(signed_order_70)
-            new_order_ids.append(result_70)
-            logger.info(f"70% order executed: {result_70}")
-
-        except Exception as e:
-            logger.error(f"Error building or executing orders: {str(e)}")
-
-        return new_order_ids
+        # Build and execute 70% order
+        signed_order_70 = build_order(client, token_id, Decimal(str(order_size_70)), Decimal(str(maker_amount_70)), cancelled_order['side'])
+        logger.info(f"70% Signed Order: {signed_order_70}")
+        result_70 = execute_order(client, signed_order_70)
+        results.append(result_70)
+        logger.info(f"70% order executed: {result_70}")
 
     except Exception as e:
-        logger.error(f"Error in reorder process: {e}", exc_info=True)
-        return []
+        logger.error(f"Error building or executing orders: {str(e)}")
+
+    return results
 
 def check_api_creds(client):
     if not client.creds or not client.creds.api_secret:
@@ -212,7 +180,7 @@ def format_order_info(order_id, price, size):
 def format_market_info(best_bid, best_ask):
     return f"Best Bid: {best_bid}\nBest Ask: {best_ask}"
 
-async def main():
+def main():
     logger.info(format_section("Initializing order_manager.py"))
     logger.info(f"Root logger handlers: {logging.getLogger().handlers}")
     logger.info(f"Main logger handlers: {logger.handlers}")
@@ -298,7 +266,7 @@ async def main():
             logger.info("Finished processing order book")
 
             # Manage orders and get cancelled orders
-            cancelled_orders = await manage_orders(client, open_orders, token_id, market_info, order_book)
+            cancelled_orders = manage_orders(client, open_orders, token_id, market_info, order_book)
             all_cancelled_orders.extend([(order_id, token_id, market_info) for order_id in cancelled_orders])
             
             logger.info(f"Cancelled orders for token_id {shorten_id(token_id)}: {[shorten_id(order_id) for order_id in cancelled_orders]}")
@@ -322,7 +290,7 @@ async def main():
                 }
                 
                 logger.info(f"Reordering cancelled order: {shorten_id(cancelled_order_id)}")
-                result = await reorder(client, order_data, token_id, market_info)
+                result = reorder(client, order_data, token_id, market_info)
                 logger.info(f"Reorder result for cancelled order {shorten_id(cancelled_order_id)}: {result}")
             else:
                 logger.warning(f"Cancelled order {shorten_id(cancelled_order_id)} not found in open orders")
@@ -333,7 +301,7 @@ async def main():
 
     logger.info("Finished processing all token IDs and reordering cancelled orders.")
 
-async def manage_orders(client: AsyncClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: Dict) -> List[str]:
+def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: Dict) -> List[str]:
     orders_to_cancel = []
     
     midpoint = (market_info['best_bid'] + market_info['best_ask']) / 2
@@ -431,5 +399,5 @@ async def manage_orders(client: AsyncClobClient, open_orders: List[Dict], token_
 if __name__ == "__main__":
     limitOrder_logger.parent = logger
     __all__ = ['manage_orders', 'get_order_book', 'get_market_info']
-    asyncio.run(main())
+    main()
 
