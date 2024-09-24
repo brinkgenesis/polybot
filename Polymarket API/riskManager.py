@@ -13,6 +13,8 @@ from order_manager import cancel_orders, reorder, get_order_book, manage_orders
 from subgraph_client import SubgraphClient
 from logger_config import main_logger
 from async_clob_client import AsyncClobClient
+from typing import List
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -79,6 +81,29 @@ class RiskManager:
             except Exception as e:
                 self.logger.error(f"Error in monitor_subgraph: {e}", exc_info=True)
                 await asyncio.sleep(config.RISK_FETCH_RETRY_DELAY)
+
+async def handle_order_cancellation(self, cancelled_order: dict):
+    """
+    Handles the logic after an order has been cancelled.
+
+    :param cancelled_order: The order that was cancelled.
+    """
+    token_id = cancelled_order['asset_id']
+    # Assume get_order_book is an asynchronous method
+    order_book = await self.clob_client.get_order_book(token_id)
+    market_info = self.get_market_info(order_book)  # Fetch the latest market info
+
+    new_order_ids: List[str] = await reorder(
+        client=self.clob_client, 
+        cancelled_order=cancelled_order, 
+        token_id=token_id, 
+        market_info=market_info
+    )
+
+    if new_order_ids:
+        logger.info(f"Reordered with new orders: {new_order_ids}")
+    else:
+        logger.warning("Reorder failed or no new orders were created.")
 
     async def run(self):
         """

@@ -116,56 +116,86 @@ async def cancel_orders(client: AsyncClobClient, order_ids: List[str], token_id:
         logger.error(f"Failed to cancel orders for token_id {shorten_id(token_id)}: {str(e)}")
         return []
 
-async def reorder(client, cancelled_order, token_id, market_info):
-    # Set total order size
-    total_order_size = float(cancelled_order['size'])
+async def reorder(client: AsyncClobClient, cancelled_order: dict, token_id: str, market_info: dict) -> List[str]:
+    """
+    Reorders a cancelled order by splitting it into two new orders (30% and 70%).
 
-    # Calculate order sizes
-    order_size_30 = total_order_size * 0.3
-    order_size_70 = total_order_size * 0.7
-
-    # Calculate maker amounts
-    best_bid = market_info['best_bid']
-    tick_size = market_info['tick_size']
-    max_incentive_spread = market_info['max_incentive_spread']
-
-    maker_amount_30 = round(best_bid - (1 * tick_size), 3)
-    maker_amount_70 = round(best_bid - (2 * tick_size), 3)
-
-    # Check if orders exceed the maximum allowed difference from best bid
-    min_allowed_price = best_bid - max_incentive_spread
-    if maker_amount_30 < min_allowed_price:
-        logger.info("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
-        maker_amount_30 = min_allowed_price
-    if maker_amount_70 < min_allowed_price:
-        logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
-        maker_amount_70 = min_allowed_price
-
-    logger.info(f"Best Bid: {best_bid}")
-    logger.info(f"Maker Amount 30%: {maker_amount_30}")
-    logger.info(f"Maker Amount 70%: {maker_amount_70}")
-
-    # Build and execute orders
-    results = []
+    :param client: Instance of AsyncClobClient.
+    :param cancelled_order: The order that was cancelled.
+    :param token_id: The token ID associated with the order.
+    :param market_info: Market information including best_bid, best_ask, tick_size, and max_incentive_spread.
+    :return: List of new order IDs.
+    """
     try:
-        # Build and execute 30% order
-        signed_order_30 = await build_order(client, token_id, Decimal(str(order_size_30)), Decimal(str(maker_amount_30)), cancelled_order['side'])
-        logger.info(f"30% Signed Order: {signed_order_30}")
-        result_30 = await execute_order(client, signed_order_30)
-        results.append(result_30)
-        logger.info(f"30% order executed: {result_30}")
+        # Set total order size
+        total_order_size = float(cancelled_order['size'])
 
-        # Build and execute 70% order
-        signed_order_70 = await build_order(client, token_id, Decimal(str(order_size_70)), Decimal(str(maker_amount_70)), cancelled_order['side'])
-        logger.info(f"70% Signed Order: {signed_order_70}")
-        result_70 = await execute_order(client, signed_order_70)
-        results.append(result_70)
-        logger.info(f"70% order executed: {result_70}")
+        # Calculate order sizes
+        order_size_30 = total_order_size * 0.3
+        order_size_70 = total_order_size * 0.7
+
+        # Calculate maker amounts
+        best_bid = market_info['best_bid']
+        tick_size = market_info['tick_size']
+        max_incentive_spread = market_info['max_incentive_spread']
+
+        maker_amount_30 = round(best_bid - (1 * tick_size), 3)
+        maker_amount_70 = round(best_bid - (2 * tick_size), 3)
+
+        # Check if orders exceed the maximum allowed difference from best bid
+        min_allowed_price = best_bid - max_incentive_spread
+        if maker_amount_30 < min_allowed_price:
+            logger.info("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
+            maker_amount_30 = min_allowed_price
+        if maker_amount_70 < min_allowed_price:
+            logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
+            maker_amount_70 = min_allowed_price
+
+        logger.info(f"Best Bid: {best_bid}")
+        logger.info(f"Maker Amount 30%: {maker_amount_30}")
+        logger.info(f"Maker Amount 70%: {maker_amount_70}")
+
+        # Check active orders to ensure only two are retained
+        active_orders = await client.get_orders(OpenOrderParams(asset_id=token_id))
+        if len(active_orders) >= 2:
+            logger.info(f"Already have {len(active_orders)} active orders for token {token_id}. Skipping reorder.")
+            return []
+
+        # Build and execute orders
+        new_order_ids = []
+        try:
+            # Build and execute 30% order
+            signed_order_30 = await client.build_order(
+                token_id=token_id,
+                size=Decimal(str(order_size_30)),
+                price=Decimal(str(maker_amount_30)),
+                side=cancelled_order['side']
+            )
+            logger.info(f"30% Signed Order: {signed_order_30}")
+            result_30 = await client.execute_order(signed_order_30)
+            new_order_ids.append(result_30)
+            logger.info(f"30% order executed: {result_30}")
+
+            # Build and execute 70% order
+            signed_order_70 = await client.build_order(
+                token_id=token_id,
+                size=Decimal(str(order_size_70)),
+                price=Decimal(str(maker_amount_70)),
+                side=cancelled_order['side']
+            )
+            logger.info(f"70% Signed Order: {signed_order_70}")
+            result_70 = await client.execute_order(signed_order_70)
+            new_order_ids.append(result_70)
+            logger.info(f"70% order executed: {result_70}")
+
+        except Exception as e:
+            logger.error(f"Error building or executing orders: {str(e)}")
+
+        return new_order_ids
 
     except Exception as e:
-        logger.error(f"Error building or executing orders: {str(e)}")
-
-    return results
+        logger.error(f"Error in reorder process: {e}", exc_info=True)
+        return []
 
 def check_api_creds(client):
     if not client.creds or not client.creds.api_secret:

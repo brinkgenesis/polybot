@@ -1,53 +1,115 @@
 import asyncio
+from decimal import Decimal
+from typing import List, Dict, Any
 from py_clob_client.client import ClobClient
-from typing import Any, Dict, List
-from utils import run_sync_in_thread
+from py_clob_client.clob_types import ApiCreds, OpenOrderParams, BookParams
+from logger_config import main_logger
+
+logger = main_logger
 
 class AsyncClobClient:
-    def __init__(self, clob_client: ClobClient):
-        self.clob_client = clob_client
+    def __init__(
+        self,
+        host: str,
+        chain_id: int,
+        key: str,
+        signature_type: int,
+        funder: str
+    ):
+        self.sync_client = ClobClient(
+            host=host,
+            chain_id=chain_id,
+            key=key,
+            signature_type=signature_type,
+            funder=funder
+        )
 
-    async def get_sampling_markets(self) -> List[Dict]:
-        return await run_sync_in_thread(self.clob_client.get_sampling_markets)
+    async def set_api_creds(self, creds: ApiCreds):
+        """
+        Asynchronously sets the API credentials.
+        """
+        try:
+            await asyncio.to_thread(self.sync_client.set_api_creds, creds)
+            logger.info("API credentials set successfully.")
+        except Exception as e:
+            logger.error(f"Error setting API credentials: {e}", exc_info=True)
+            raise
 
-    async def get_orders(self, params: Any) -> List[Dict]:
+    async def get_orders(self, params: OpenOrderParams) -> List[Dict[str, Any]]:
         """
-        Asynchronously fetches orders based on the provided parameters.
+        Asynchronously fetches active orders based on the provided parameters.
         """
-        return await run_sync_in_thread(lambda: self.clob_client.get_orders(params))
+        try:
+            orders = await asyncio.to_thread(self.sync_client.get_orders, params)
+            return orders
+        except Exception as e:
+            logger.error(f"Error fetching orders: {e}", exc_info=True)
+            return []
 
-    async def get_market_info(self, token_id: str) -> Dict:
+    async def build_order(
+        self, 
+        token_id: str, 
+        size: Decimal, 
+        price: Decimal, 
+        side: str
+    ) -> Dict[str, Any]:
         """
-        Asynchronously fetches market information for a given token ID.
+        Asynchronously builds a signed order.
         """
-        return await run_sync_in_thread(lambda: self.clob_client.get_market_info(token_id))
+        try:
+            signed_order = await asyncio.to_thread(
+                self.sync_client.build_order, 
+                token_id, 
+                size, 
+                price, 
+                side
+            )
+            return signed_order
+        except Exception as e:
+            logger.error(f"Error building order: {e}", exc_info=True)
+            raise
 
-    async def get_order_book(self, token_id: str) -> Dict:
+    async def execute_order(self, signed_order: Dict[str, Any]) -> str:
+        """
+        Asynchronously executes a signed order and returns the order ID.
+        """
+        try:
+            order_id = await asyncio.to_thread(
+                self.sync_client.execute_order, 
+                signed_order
+            )
+            return order_id
+        except Exception as e:
+            logger.error(f"Error executing order: {e}", exc_info=True)
+            raise
+
+    async def cancel_orders(self, order_ids: List[str], token_id: str) -> List[str]:
+        """
+        Asynchronously cancels multiple orders.
+        """
+        try:
+            cancelled_order_ids = await asyncio.to_thread(
+                self.sync_client.cancel_orders, 
+                order_ids
+            )
+            logger.info(f"Cancelled orders: {cancelled_order_ids}")
+            return cancelled_order_ids
+        except Exception as e:
+            logger.error(f"Error cancelling orders: {e}", exc_info=True)
+            return []
+
+    async def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """
         Asynchronously fetches the order book for a given token ID.
         """
-        return await run_sync_in_thread(lambda: self.clob_client.get_order_book(token_id))
-
-    async def manage_orders(self, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: Dict) -> List[str]:
-        """
-        Asynchronously manages orders based on provided parameters.
-        """
-        return await run_sync_in_thread(lambda: self.clob_client.manage_orders(open_orders, token_id, market_info, order_book))
-
-    async def cancel_orders(self, order_ids: List[str]) -> Any:
-        """
-        Asynchronously cancels orders with the given order IDs.
-        """
-        return await run_sync_in_thread(lambda: self.clob_client.cancel_orders(order_ids))
-
-    async def create_order(self, order_args: Any) -> Any:
-        """
-        Asynchronously creates a new order with the provided arguments.
-        """
-        return await run_sync_in_thread(lambda: self.clob_client.create_order(order_args))
-
-    async def post_order(self, signed_order: Dict, order_type: Any) -> Dict:
-        """
-        Asynchronously posts a signed order.
-        """
-        return await run_sync_in_thread(lambda: self.clob_client.post_order(signed_order, order_type))
+        try:
+            order_book = await asyncio.to_thread(
+                self.sync_client.get_order_book, 
+                token_id
+            )
+            return order_book
+        except Exception as e:
+            logger.error(f"Error fetching order book for {token_id}: {e}", exc_info=True)
+            return {}
+    
+    # Add other methods following the same pattern...
