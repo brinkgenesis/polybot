@@ -13,18 +13,42 @@ from logger_config import main_logger as logger
 from utils import shorten_id
 from typing import List
 import asyncio
+from async_clob_client import AsyncClobClient
+from typing import Dict, Any
 
 # Load environment variables
 load_dotenv()
 
 POLYMARKET_HOST = os.getenv("POLYMARKET_HOST")
 
-def get_order_book(client, token_id: str):
+async def get_market_info(clob_client: AsyncClobClient, token_id: str) -> Dict[str, Any]:
+    """
+    Fetches market information for a given token ID.
+
+    :param clob_client: An instance of AsyncClobClient.
+    :param token_id: The token ID for which to fetch market information.
+    :return: A dictionary containing market information.
+    """
     try:
-        return client.get_order_book(token_id)
+        market_info = await clob_client.get_market_info(token_id)
+        logger.info(f"Fetched market info for token ID {token_id}: {market_info}")
+        return market_info
     except Exception as e:
-        logger.error(f"Error fetching order book for token_id {shorten_id(token_id)}: {str(e)}")
-        return None
+        logger.error(f"Error fetching market info for token ID {token_id}: {e}", exc_info=True)
+        return {}
+
+
+async def get_order_book(clob_client: AsyncClobClient, token_id: str) -> Dict:
+    """
+    Fetches the order book for a given token ID.
+    """
+    try:
+        order_book = await clob_client.get_order_book(token_id)
+        logger.info(f"Fetched order book for token ID {token_id}.")
+        return order_book
+    except Exception as e:
+        logger.error(f"Error fetching order book for token ID {token_id}: {e}", exc_info=True)
+        return {}
 
 def get_open_orders(client):
     try:
@@ -83,9 +107,9 @@ def print_open_orders(open_orders):
     for order in open_orders:
         logger.info(f"Order ID: {shorten_id(order['id'])}\nAsset ID: {shorten_id(order['asset_id'])}\nSide: {order['side']}\nPrice: {order['price']}\nSize: {order['original_size']}\n---")
 
-async def cancel_orders(client: ClobClient, order_ids: List[str], token_id: str) -> List[str]:
+async def cancel_orders(client: AsyncClobClient, order_ids: List[str], token_id: str) -> List[str]:
     try:
-        client.cancel_orders(order_ids)
+        await client.cancel_orders(order_ids)
         logger.info(f"Cancelled orders: {[shorten_id(order_id) for order_id in order_ids]}")
         return order_ids
     except Exception as e:
@@ -244,7 +268,7 @@ async def main():
             logger.info("Finished processing order book")
 
             # Manage orders and get cancelled orders
-            cancelled_orders = manage_orders(client, open_orders, token_id, market_info, order_book)
+            cancelled_orders = await manage_orders(client, open_orders, token_id, market_info, order_book)
             all_cancelled_orders.extend([(order_id, token_id, market_info) for order_id in cancelled_orders])
             
             logger.info(f"Cancelled orders for token_id {shorten_id(token_id)}: {[shorten_id(order_id) for order_id in cancelled_orders]}")
@@ -279,7 +303,7 @@ async def main():
 
     logger.info("Finished processing all token IDs and reordering cancelled orders.")
 
-def manage_orders(client, open_orders, token_id, market_info, order_book):
+async def manage_orders(client: AsyncClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: Dict) -> List[str]:
     orders_to_cancel = []
     
     midpoint = (market_info['best_bid'] + market_info['best_ask']) / 2
@@ -374,7 +398,8 @@ def manage_orders(client, open_orders, token_id, market_info, order_book):
             orders_to_cancel = []
 
     return orders_to_cancel
-
 if __name__ == "__main__":
     limitOrder_logger.parent = logger
+    __all__ = ['manage_orders', 'get_order_book', 'get_market_info']
     asyncio.run(main())
+

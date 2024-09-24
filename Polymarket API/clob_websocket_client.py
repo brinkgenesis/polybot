@@ -1,56 +1,70 @@
-import websocket
+import websockets
+import asyncio
 import json
 import threading
 from py_clob_client.client import ClobClient
+import logging
+from utils import run_sync_in_thread
 
-class ClobWebsocketClient:
-    def __init__(self, clob_client: ClobClient, message_handler: callable = None):
-        self.ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/"
-        self.clob_client = clob_client
-        self.ws = None
-        self.message_handler = message_handler  # Callback for handling messages
+ 
 
-    def connect(self):
-        self.ws = websocket.WebSocketApp(
-            self.ws_url,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open
-        )
-        wst = threading.Thread(target=self.ws.run_forever, daemon=True)
-        wst.start()
-
-    def on_message(self, ws, message):
-        if self.message_handler:
-            self.message_handler(message)  # Pass message to the handler
-        else:
-            print(f"Received message: {message}")
-
-    def on_error(self, ws, error):
-        print(f"Error: {error}")
-
-    def on_close(self, ws, close_status_code, close_msg):
-        print("WebSocket connection closed")
-
-    def on_open(self, ws):
-        print("WebSocket connection opened")
-        self.subscribe_to_user_channel()
-
-    def subscribe_to_user_channel(self):
-        subscription = {
-            "type": "subscribe",
-            "channel": "user",
-            "apiKey": self.clob_client.api_key,
-            "signature": self.clob_client.get_signature(),
-            "timestamp": self.clob_client.get_timestamp()
-        }
-        self.ws.send(json.dumps(subscription))
-
-    def subscribe_to_market_channel(self, condition_id: str):
-        subscription = {
-            "type": "subscribe",
-            "channel": "market",
-            "marketId": condition_id
-        }
-        self.ws.send(json.dumps(subscription))
+# class ClobWebsocketClient:
+#     def __init__(self, clob_client: ClobClient, uri: str = "wss://clob.polymarket.com/ws"):
+#         """
+#            Initializes the WebSocket client for the CLOB.
+#
+#            :param clob_client: Instance of ClobClient.
+#            :param uri: WebSocket URI for the CLOB.
+#            """
+#         self.clob_client = clob_client
+#         self.uri = uri
+#         self.logger = logging.getLogger(self.__class__.__name__)
+#         self.websocket = None
+#
+#     async def connect(self):
+#         """
+#         Establishes the WebSocket connection.
+#            """
+#         try:
+#             self.websocket = await websockets.connect(self.uri)
+#             self.logger.info("Connected to WebSocket.")
+#         except Exception as e:
+#             self.logger.error(f"Failed to connect to WebSocket: {e}", exc_info=True)
+#
+#     async def subscribe_to_market_channel(self, market_id: str):
+#            """
+#            Subscribes to the market channel for a specific market ID.
+#
+#            :param market_id: The market ID to subscribe to.
+#            """
+#            subscription_message = json.dumps({
+#                "type": "subscribe",
+#                "channel": "market",
+#                "market": market_id
+#            })
+#            try:
+#                await self.websocket.send(subscription_message)
+#                self.logger.info(f"Subscribed to market channel: {market_id}")
+#            except Exception as e:
+#                self.logger.error(f"Failed to subscribe to market channel {market_id}: {e}", exc_info=True)
+#
+#     async def market_websocket(self):
+#            """
+#            Asynchronously listens to the WebSocket for market events.
+#
+#            Yields:
+#                Messages received from the WebSocket.
+#            """
+#            await self.connect()
+#            # Subscribe to all relevant market channels
+#            markets = await run_sync_in_thread(self.clob_client.get_sampling_markets)
+#            for market in markets:
+#                await self.subscribe_to_market_channel(market['token_id'])
+#            
+#            try:
+#                async for message in self.websocket:
+#                    yield message
+#            except websockets.ConnectionClosed:
+#                self.logger.warning("WebSocket connection closed.")
+#            except Exception as e:
+#                self.logger.error(f"Error in WebSocket connection: {e}", exc_info=True)

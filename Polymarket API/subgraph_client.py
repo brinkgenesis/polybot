@@ -1,10 +1,8 @@
 import asyncio
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Callable, Any, Optional
 from gql import gql, Client
-from gql.transport.requests import RequestsHTTPTransport
 from gql.transport.aiohttp import AIOHTTPTransport
 import logging
-import requests
 import certifi
 import ssl
 
@@ -12,37 +10,26 @@ class SubgraphClient:
     def __init__(self, url: str):
         """
         Initializes the SubgraphClient with the provided GraphQL endpoint.
-
-        :param url: The HTTP URL of the subgraph.
         """
         self.transport = AIOHTTPTransport(url=url)
         self.client = Client(transport=self.transport, fetch_schema_from_transport=True)
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-    async def subscribe_to_events(self, subscription_query: str, variables: Dict, callback: callable):
+    async def subscribe_to_events(self, subscription_query: str, variables: Dict, callback: Callable[[Dict], Any]):
         """
         Subscribes to GraphQL events using the provided subscription query and variables.
-
-        :param subscription_query: The GraphQL subscription query string.
-        :param variables: A dictionary of variables for the subscription query.
-        :param callback: A callable to handle each incoming event.
         """
         try:
-            async with self.client.subscribe(subscription_query, variable_values=variables) as subscription:
-                async for event in subscription:
+            async with self.client as session:
+                async for event in session.subscribe(gql(subscription_query), variable_values=variables):
                     await callback(event)
         except Exception as e:
             self.logger.error(f"Error subscribing to events: {e}", exc_info=True)
-
+           
     async def get_historical_trades(self, market_id: str, start_time: int, end_time: int, limit: int = 1000) -> List[Dict]:
         """
         Fetches historical trades for a specific market within a given time frame.
-
-        :param market_id: The identifier of the market.
-        :param start_time: The UNIX timestamp marking the start of the period.
-        :param end_time: The UNIX timestamp marking the end of the period.
-        :param limit: The maximum number of trades to fetch.
-        :return: A list of trade dictionaries.
         """
         query = gql('''
         query getHistoricalTrades($market: String!, $startTime: Int!, $endTime: Int!, $limit: Int!) {
@@ -63,6 +50,7 @@ class SubgraphClient:
             tradeAmount
             outcomeIndex
             outcomeTokensAmount
+            price
           }
         }
         ''')
@@ -75,17 +63,16 @@ class SubgraphClient:
         }
 
         try:
-            result = await self.client.execute_async(query, variable_values=variables)
-            return result.get('trades', [])
+            async with self.client as session:
+                result = await session.execute(query, variable_values=variables)
+                return result.get('trades', [])
         except Exception as e:
             self.logger.error(f"Error fetching historical trades for market {market_id}: {e}", exc_info=True)
             return []
 
-    def get_markets(self) -> List[Dict]:
+    async def get_markets(self) -> List[Dict]:
         """
         Fetches all active markets.
-
-        :return: A list of market dictionaries.
         """
         query = gql('''
         query {
@@ -96,11 +83,41 @@ class SubgraphClient:
           }
         }
         ''')
+
         try:
-            result = self.client.execute(query)
-            return result.get('data', {}).get('markets', [])
+            async with self.client as session:
+                result = await session.execute(query)
+                return result.get('markets', [])
         except Exception as e:
             self.logger.error(f"Error fetching markets: {e}", exc_info=True)
             return []
-        
-        
+
+    async def get_large_orders(self, volume_threshold: float) -> List[Dict]:
+        """
+        Fetches large orders exceeding the specified volume threshold.
+
+        :param volume_threshold: The minimum dollar amount for orders to be considered large.
+        :return: A list of large order dictionaries.
+        """
+        query = gql('''
+        query GetLargeOrders($value: Float!) {
+            trades(where: { tradeAmount_gt: $value }) {
+                id
+                side
+                outcome
+                size
+                price
+                market
+            }
+        }
+        ''')
+
+        variables = {"value": volume_threshold}
+
+        try:
+            async with self.client as session:
+                result = await session.execute(query, variable_values=variables)
+                return result.get("trades", [])
+        except Exception as e:
+            self.logger.error(f"Error fetching large orders from Subgraph: {e}", exc_info=True)
+            return []

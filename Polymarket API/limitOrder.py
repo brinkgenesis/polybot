@@ -9,6 +9,8 @@ from config import HOST, CHAIN_ID, PRIVATE_KEY
 from pprint import pprint
 import logging
 from py_clob_client.exceptions import PolyApiException
+from logger_config import main_logger
+from utils import shorten_id
 
 # Configure the logger
 class CustomFormatter(logging.Formatter):
@@ -60,7 +62,10 @@ async def build_order(client, token_id, size, price, side):
         token_id=token_id
     ) 
     print_section("Building Order", f"Building order with args: {order_args}")
-    return client.create_order(order_args)
+    signed_order = await client.create_order(order_args)
+    logger.debug(f"Signed Order Type: {type(signed_order)}")
+    logger.debug(f"Signed Order Content: {signed_order}")
+    return signed_order
 
 async def execute_order(client, signed_order):
     try:
@@ -68,7 +73,12 @@ async def execute_order(client, signed_order):
         logger.info(f"Attempting to execute order: {signed_order}")
 
         logger.info("\nAttempting to post order")
-        resp = client.post_order(signed_order, OrderType.GTC)
+        resp = await client.post_order(signed_order, OrderType.GTC)
+        
+        # Log the type and content of resp
+        logger.debug(f"Response Type: {type(resp)}")
+        logger.debug(f"Response Content: {resp}")
+
         logger.info("Order posted, processing response")
 
         if resp['success']:
@@ -80,50 +90,52 @@ async def execute_order(client, signed_order):
 
     except Exception as e:
         print_section("Execution Error", f"❌ Failed to execute order: {str(e)}")
+        logger.error(f"Exception Type: {type(e)}")
+        logger.error(f"Exception Message: {e}", exc_info=True)
         return False, str(e)
 
 async def main():
     try:
         # Initialize the ClobClient with all necessary credentials
-        client = ClobClient(
+        async with ClobClient(
             host=HOST,
             chain_id=CHAIN_ID,
             key=PRIVATE_KEY,
             signature_type=2,  # POLY_GNOSIS_SAFE
             funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
-        )
-        client.set_api_creds(client.create_or_derive_api_creds())
-        print_section("ClobClient Initialization", "ClobClient initialized with the following details:")
-        pprint(vars(client))
-        logger.info("ClobClient initialized successfully")
+        ) as client:
+            await client.set_api_creds(client.create_or_derive_api_creds())  # Ensure this is async
+            print_section("ClobClient Initialization", "ClobClient initialized with the following details:")
+            pprint(vars(client))
+            logger.info("ClobClient initialized successfully")
 
-        # Get order details from user input
-        token_id, size, price, side = get_order_details()
-        print_section("Order Details", f"token_id={token_id}, size={size}, price={price}, side={side}")
+            # Get order details from user input
+            token_id, size, price, side = get_order_details()
+            print_section("Order Details", f"token_id={token_id}, size={size}, price={price}, side={side}")
 
-        # Check tick size
-        try:
-            tick_size = client.get_tick_size(token_id)
-            print_section("Tick Size", f"Tick size for token {token_id}: {tick_size}")
-        except PolyApiException as e:
-            print_section("Tick Size Error", f"Failed to get tick size: {e}")
-            if e.status_code == 404:
-                logger.error(f"Market not found for token ID: {token_id}")
-            return
+            # Check tick size
+            try:
+                tick_size = await client.get_tick_size(token_id)  # Ensure this is async
+                print_section("Tick Size", f"Tick size for token {token_id}: {tick_size}")
+            except PolyApiException as e:
+                print_section("Tick Size Error", f"Failed to get tick size: {e}")
+                if e.status_code == 404:
+                    logger.error(f"Market not found for token ID: {token_id}")
+                return
 
-        # Build the order
-        try:
-            signed_order = await build_order(client, token_id, size, price, side)
-            logger.info("Order built successfully")
-        except Exception as e:
-            print_section("Order Building Error", f"Failed to build order: {e}")
-            return
+            # Build the order
+            try:
+                signed_order = await build_order(client, token_id, size, price, side)
+                logger.info("Order built successfully")
+            except Exception as e:
+                print_section("Order Building Error", f"Failed to build order: {e}")
+                return
 
-        # Execute the order
-        success, result = await execute_order(client, signed_order)
+            # Execute the order
+            success, result = await execute_order(client, signed_order)
 
-        if not success:
-            print_section("Execution Error", f"Order execution failed. Reason: {result}")
+            if not success:
+                print_section("Execution Error", f"Order execution failed. Reason: {result}")
 
     except PolyApiException as e:
         print_section("PolyApiException", f"PolyApiException occurred: {e}")
