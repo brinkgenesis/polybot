@@ -25,7 +25,7 @@ RISK_HIGH_ACTIVITY_THRESHOLD_PERCENT = 50  # 50%
 # RiskManager intervals and delays
 RISK_FETCH_RETRY_DELAY = 60
 RISK_ORDER_BOOK_FETCH_DELAY = 1
-RISK_MONITOR_INTERVAL = 60  # Monitor every minute
+RISK_MONITOR_INTERVAL = 10  # seconds between each OrderManager run
 RISK_CORE_MANAGEMENT_INTERVAL = 3600
 
 # Parameters for gamma_market_api.py

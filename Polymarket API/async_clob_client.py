@@ -2,27 +2,14 @@ import asyncio
 from decimal import Decimal
 from typing import List, Dict, Any
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OpenOrderParams, BookParams
+from py_clob_client.clob_types import ApiCreds, OpenOrderParams
 from logger_config import main_logger
 
 logger = main_logger
 
 class AsyncClobClient:
-    def __init__(
-        self,
-        host: str,
-        chain_id: int,
-        key: str,
-        signature_type: int,
-        funder: str
-    ):
-        self.sync_client = ClobClient(
-            host=host,
-            chain_id=chain_id,
-            key=key,
-            signature_type=signature_type,
-            funder=funder
-        )
+    def __init__(self, sync_client: ClobClient):
+        self.sync_client = sync_client
 
     async def set_api_creds(self, creds: ApiCreds):
         """
@@ -54,17 +41,17 @@ class AsyncClobClient:
         side: str
     ) -> Dict[str, Any]:
         """
-        Asynchronously builds a signed order.
+        Asynchronously builds an order.
         """
         try:
-            signed_order = await asyncio.to_thread(
+            order = await asyncio.to_thread(
                 self.sync_client.build_order, 
                 token_id, 
                 size, 
                 price, 
                 side
             )
-            return signed_order
+            return order
         except Exception as e:
             logger.error(f"Error building order: {e}", exc_info=True)
             raise
@@ -90,7 +77,8 @@ class AsyncClobClient:
         try:
             cancelled_order_ids = await asyncio.to_thread(
                 self.sync_client.cancel_orders, 
-                order_ids
+                order_ids, 
+                token_id
             )
             logger.info(f"Cancelled orders: {cancelled_order_ids}")
             return cancelled_order_ids
