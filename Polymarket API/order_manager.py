@@ -19,7 +19,7 @@ from typing import List, Dict, Any
 load_dotenv()
 
 POLYMARKET_HOST = os.getenv("POLYMARKET_HOST")
-MIN_ORDER_SIZE = Decimal(os.getenv('MIN_ORDER_SIZE', '50'))
+MIN_ORDER_SIZE = Decimal(os.getenv('MIN_ORDER_SIZE', '200'))
 
 # Initialize ThreadPoolExecutor
 executor = ThreadPoolExecutor(max_workers=10)  # Adjust the number of threads as needed
@@ -110,6 +110,26 @@ def get_and_format_order_book(order_book: OrderBookSummary, token_id: str, best_
         formatted_output += f"Bid: Price: ${float(bid.price):.2f}, Size: {float(bid.size):.2f}\n"
 
     return formatted_output
+
+def get_market_info(client: ClobClient, token_id: str):
+    try:
+        market_info = client.get_market_info(token_id)
+        return {
+            'best_bid': market_info.get('best_bid'),
+            'best_ask': market_info.get('best_ask'),
+            'tick_size': market_info.get('tick_size'),
+            'max_incentive_spread': market_info.get('max_incentive_spread'),
+        
+        }
+    except Exception as e:
+        logger.error(f"Error fetching market info for token_id {token_id}: {e}")
+        return {
+            'best_bid': None,
+            'best_ask': None,
+            'tick_size': None,
+            'max_incentive_spread': None,
+         
+        }
 
 def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: OrderBookSummary) -> List[str]:
     orders_to_cancel = []
