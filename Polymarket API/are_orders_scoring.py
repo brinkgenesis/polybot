@@ -1,4 +1,4 @@
-from logger_config import main_logger as logger
+from utils.logger_config import main_logger as logger
 import os
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderScoringParams, OrdersScoringParams

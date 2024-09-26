@@ -76,7 +76,7 @@ class MockClobClient:
 
 # Test function
 def test_calculate_market_score():
-    from rewardsDashboard import calculate_market_score
+    from rewards_dashboard.rewardsDashboard import calculate_market_score
 
     mock_client = MockClobClient()
     
