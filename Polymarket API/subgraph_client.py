@@ -5,12 +5,14 @@ from gql.transport.aiohttp import AIOHTTPTransport
 import logging
 import certifi
 import ssl
+import requests
 
 class SubgraphClient:
     def __init__(self, url: str):
         """
         Initializes the SubgraphClient with the provided GraphQL endpoint.
         """
+        self.url = url  # Add this line to store the URL
         self.transport = AIOHTTPTransport(url=url)
         self.client = Client(transport=self.transport, fetch_schema_from_transport=True)
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -92,32 +94,42 @@ class SubgraphClient:
             self.logger.error(f"Error fetching markets: {e}", exc_info=True)
             return []
 
-    async def get_large_orders(self, volume_threshold: float) -> List[Dict]:
+    def get_large_orders(self, volume_threshold: float) -> List[Dict]:
         """
         Fetches large orders exceeding the specified volume threshold.
-
-        :param volume_threshold: The minimum dollar amount for orders to be considered large.
-        :return: A list of large order dictionaries.
         """
-        query = gql('''
-        query GetLargeOrders($value: Float!) {
-            trades(where: { tradeAmount_gt: $value }) {
+        query = '''
+        query GetLargeOrders($value: BigDecimal!) {
+            trades(where: {tradeAmount_gt: $value}) {
                 id
                 side
-                outcome
-                size
+                amount
                 price
-                market
+                outcomeToken {
+                    id
+                    symbol
+                }
+                market {
+                    id
+                    question
+                    resolutionTimestamp
+                }
+                timestamp
+                tradeAmount
             }
         }
-        ''')
+        '''
 
-        variables = {"value": volume_threshold}
+        variables = {"value": str(volume_threshold)}  # Ensure the value is a string
 
         try:
-            async with self.client as session:
-                result = await session.execute(query, variable_values=variables)
-                return result.get("trades", [])
+            response = requests.post(
+                self.url,
+                json={'query': query, 'variables': variables}
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get('data', {}).get('trades', [])
         except Exception as e:
             self.logger.error(f"Error fetching large orders from Subgraph: {e}", exc_info=True)
             return []

@@ -500,6 +500,6 @@ def main_loop():
 
 if __name__ == "__main__":
     limitOrder_logger.parent = logger
-    __all__ = ['manage_orders', 'get_order_book', 'get_market_info']
+    __all__ = ['manage_orders', 'get_order_book_sync', 'get_market_info_sync']
     main_loop()
 

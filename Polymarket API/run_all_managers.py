@@ -3,22 +3,21 @@ from py_clob_client.client import ClobClient
 from async_clob_client import AsyncClobClient
 from subgraph_client import SubgraphClient
 from riskManager import RiskManager
-from order_manager import manage_orders, get_order_book, get_market_info
+from order_manager import manage_orders, get_order_book_sync as get_order_book, get_market_info_sync as get_market_info
 from limitOrder import main as limit_order_main
 from logger_config import main_logger
 import config
 from py_clob_client.clob_types import ApiCreds, OpenOrderParams
 from utils import shorten_id
+import limitOrder
 
 logger = main_logger
 
-async def run_risk_manager(clob_client: AsyncClobClient, subgraph_client: SubgraphClient):
-    """Runs the RiskManager coroutine."""
-    risk_manager = RiskManager(clob_client, subgraph_client)
+async def run_risk_manager(async_clob_client: AsyncClobClient, subgraph_client: SubgraphClient, token_id_queue: asyncio.Queue):
+    risk_manager = RiskManager(async_clob_client, subgraph_client, token_id_queue)
     await risk_manager.run()
 
-async def run_order_manager(clob_client: AsyncClobClient):
-    """Continuously runs the OrderManager with a 10-second interval."""
+async def run_order_manager(clob_client: AsyncClobClient, token_id_queue: asyncio.Queue):
     while True:
         try:
             logger.info("OrderManager: Fetching open orders.")
@@ -30,22 +29,11 @@ async def run_order_manager(clob_client: AsyncClobClient):
                 unique_token_ids = set(order['asset_id'] for order in open_orders)
                 logger.info(f"OrderManager: Processing {len(unique_token_ids)} unique token IDs.")
 
-                for token_id in unique_token_ids:
-                    logger.info(f"OrderManager: Processing token_id: {shorten_id(token_id)}")
-                    order_book = await clob_client.get_order_book(token_id)
-                    if not order_book:
-                        logger.warning(f"OrderManager: No order book found for token {token_id}")
-                        continue
+                # Send unique_token_ids to the queue
+                await token_id_queue.put(unique_token_ids)
+                
+                # Additional processing can go here
 
-                    market_info = get_market_info(order_book)
-                    cancelled_orders = await manage_orders(
-                        clob_client, open_orders, token_id, market_info, order_book
-                    )
-
-                    for order_id in cancelled_orders:
-                        # Implement any additional logic if needed
-                        logger.info(f"OrderManager: Cancelled order {shorten_id(order_id)} processed.")
-            
             logger.info(f"OrderManager: Sleeping for {config.RISK_MONITOR_INTERVAL} seconds.")
             await asyncio.sleep(config.RISK_MONITOR_INTERVAL)
 
@@ -60,7 +48,7 @@ async def run_limit_order():
         try:
             logger.info("LimitOrder: Starting a new run.")
             # Run the synchronous limit_order_main in a separate thread to avoid blocking
-            await asyncio.to_thread(limit_order_main)
+            await asyncio.to_thread(limitOrder.limit_order_main)
             logger.info("LimitOrder: Completed a run.")
         except Exception as e:
             logger.error(f"LimitOrder: Error during execution: {e}", exc_info=True)
@@ -92,11 +80,14 @@ async def main():
     # Initialize SubgraphClient with HTTP URL
     subgraph_client = SubgraphClient(config.SUBGRAPH_HTTP_URL)
 
+    # Initialize the shared token_id queue
+    token_id_queue = asyncio.Queue()
+
     try:
         # Run all managers concurrently
         await asyncio.gather(
-            run_risk_manager(async_clob_client, subgraph_client),
-            run_order_manager(async_clob_client),
+            run_risk_manager(async_clob_client, subgraph_client, token_id_queue),
+            run_order_manager(async_clob_client, token_id_queue),
             run_limit_order()
         )
     finally:
