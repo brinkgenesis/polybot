@@ -44,7 +44,7 @@ def print_section(title, content):
     logger.info("")
 
 def get_order_details():
-    print_section("Order Input", "Please enter the following details:")
+    print_section("Order Input", f"Please enter the following details:")
     token_id = input("Enter the token ID: ")
     size = Decimal(input("Enter the order size: "))
     price = Decimal(input("Enter the execution price: "))
