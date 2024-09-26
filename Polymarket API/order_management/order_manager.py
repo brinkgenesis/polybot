@@ -9,7 +9,7 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OpenOrderParams, OrderArgs, BookParams, OrderType, OrderBookSummary
 from shared.are_orders_scoring import run_order_scoring
 from gamma_client.gamma_market_api import get_gamma_market_data
-from limitOrder import build_order, execute_order, logger as limitOrder_logger
+from order_management.limitOrder import build_order, execute_order, logger as limitOrder_logger
 from decimal import Decimal
 from utils.logger_config import main_logger as logger
 from utils.utils import shorten_id
