@@ -30,6 +30,9 @@ executor = ThreadPoolExecutor(max_workers=10)  # Adjust the number of threads as
 # Add this at the top of your file, after other imports
 cancelled_orders_cooldown: Dict[str, float] = {}
 
+# Global dictionary to track tokens on cooldown
+tokens_on_cooldown = {}
+
 def get_market_info_sync(clob_client: ClobClient, token_id: str) -> Dict[str, Any]:
     """
     Synchronously fetches market information for a given token ID.
@@ -135,6 +138,7 @@ def get_market_info(client: ClobClient, token_id: str):
         }
 
 def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: OrderBookSummary) -> List[str]:
+    global tokens_on_cooldown  # Declare the global variable
     orders_to_cancel = []
     
     midpoint = (market_info['best_bid'] + market_info['best_ask']) / 2
@@ -165,6 +169,8 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
                 orders_to_cancel.append(order_id)
                 logger.info(f"Order {shorten_id(order_id)} is not scoring and will be cancelled")
                 cancelled_orders_cooldown[order_id] = time.time()
+                tokens_on_cooldown[token_id] = time.time()
+                logger.info(f"Token {shorten_id(token_id)} added to cooldown due to order not scoring.")
                 continue
 
             # For scoring orders, check other conditions
@@ -204,6 +210,9 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
             if best_bid_value_low:
                 should_cancel = True
                 cancel_reasons.append("best bid value is less than $500")
+                # Add token_id to tokens_on_cooldown
+                tokens_on_cooldown[token_id] = time.time()
+                logger.info(f"Token {shorten_id(token_id)} added to cooldown due to low best bid value.")
             logger.info(f"4. Best bid value < $500: {best_bid_value_low}")
 
             # 5. Order book size check
@@ -326,6 +335,59 @@ def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, 
         logger.error(f"Error in reorder function for order {shorten_id(order_id)}: {str(e)}", exc_info=True)
         return []
 
+def auto_sell_filled_orders(client: ClobClient):
+    """
+    Checks open orders for filled portions and executes sell orders equal to the filled size.
+    """
+    try:
+        open_orders = client.get_orders(OpenOrderParams())
+    except Exception as e:
+        logger.error(f"Error fetching open orders: {e}")
+        return
+
+    for order in open_orders:
+        size_matched = float(order.get('size_matched', 0))
+        original_size = float(order.get('original_size', 0))
+        if size_matched > 0:
+            # Build and execute a sell order equal to the size that has been filled
+            token_id = order.get('asset_id')
+            side = 'SELL'
+            size = size_matched  # Amount to sell is equal to size_matched
+
+            # Get the order book for the token
+            try:
+                order_book = client.get_order_book(token_id)
+            except Exception as e:
+                logger.error(f"Error fetching order book for token {token_id}: {e}")
+                continue
+
+            if order_book and order_book.bids:
+                # Sort bids in descending order to get the best (highest) bid price
+                sorted_bids = sorted(order_book.bids, key=lambda x: float(x.price), reverse=True)
+                best_bid_price = float(sorted_bids[0].price)
+                logger.info(f"Best bid price for token {token_id}: {best_bid_price}")
+
+                # Build the order
+                try:
+                    signed_order = build_order(client, token_id, size, best_bid_price, side)
+                    logger.info(f"Order built successfully for token {token_id}")
+                except Exception as e:
+                    logger.error(f"Failed to build order for token {token_id}: {e}")
+                    continue
+
+                # Execute the order
+                success, result = execute_order(client, signed_order)
+
+                if success:
+                    logger.info(f"Placed sell order for {size} of token {token_id} at price {best_bid_price}")
+                else:
+                    logger.error(f"Order execution failed for token {token_id}. Reason: {result}")
+            else:
+                logger.info(f"No bids available for token {token_id}")
+        else:
+            logger.info(f"No filled orders to process for order ID: {order.get('id')}")
+
+
 def print_open_orders(open_orders: List[Dict[str, Any]]):
     """
     Logs the details of open orders.
@@ -360,30 +422,12 @@ def format_market_info(best_bid: float, best_ask: float) -> str:
     """
     return f"Best Bid: {best_bid}\nBest Ask: {best_ask}"
 
-def main():
+def main(client: ClobClient):
     """
     Main function to fetch, process, cancel, and reorder orders.
     """
-    try:
-        # Initialize the ClobClient with all necessary credentials
-        client = ClobClient(
-            host=POLYMARKET_HOST,
-            chain_id=int(os.getenv("CHAIN_ID")),
-            key=os.getenv("PRIVATE_KEY"),
-            signature_type=2,  # POLY_GNOSIS_SAFE
-            funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
-        )
-            # Set API credentials
-        api_key = os.getenv("POLY_API_KEY")
-        api_secret = os.getenv("POLY_API_SECRET")
-        api_passphrase = os.getenv("POLY_PASSPHRASE")
-        
-        if not api_key or not api_secret or not api_passphrase:
-            logger.error("API credentials are missing. Please check your environment variables.")
-            return
-
-        client.set_api_creds(ApiCreds(api_key, api_secret, api_passphrase))
-            
+    global tokens_on_cooldown  # Declare the global variable
+    try:     
         # Fetch open orders
         open_orders = get_open_orders(client)
         if not open_orders:
@@ -399,6 +443,17 @@ def main():
         futures = []
 
         for token_id in unique_token_ids:
+            # Check if the token_id is on cooldown
+            if token_id in tokens_on_cooldown:
+                cooldown_time = tokens_on_cooldown[token_id]
+                if time.time() - cooldown_time < 600:  # 600 seconds = 10 minutes
+                    logger.info(f"Token {shorten_id(token_id)} is on cooldown. Skipping processing.")
+                    continue
+                else:
+                    # Remove from cooldown if 10 minutes have passed
+                    del tokens_on_cooldown[token_id]
+                    logger.info(f"Cooldown period ended for token {shorten_id(token_id)}. Proceeding with processing.")
+
             logger.info(format_section(f"Processing token_id: {shorten_id(token_id)}"))
             try:
                 # Fetch order book data
@@ -425,12 +480,12 @@ def main():
                     'max_incentive_spread': max_incentive_spread
                 }
                 
-                logger.info(format_section(f"Order book data for token_id {shorten_id(token_id)}"))
-                logger.info(format_market_info(best_bid, best_ask))
+                #logger.info(format_section(f"Order book data for token_id {shorten_id(token_id)}"))
+                #logger.info(format_market_info(best_bid, best_ask))
 
-                formatted_order_book = get_and_format_order_book(order_book, token_id, best_bid, best_ask)
-                logger.info(formatted_order_book)
-                logger.info("Finished processing order book")
+                #formatted_order_book = get_and_format_order_book(order_book, token_id, best_bid, best_ask)
+                #logger.info(formatted_order_book)
+               # logger.info("Finished processing order book")
 
                 # Manage orders and get cancelled orders
                 cancelled_orders = manage_orders(client, open_orders, token_id, market_info, order_book)
@@ -468,34 +523,55 @@ def main():
         logger.error(f"An error occurred in main: {e}", exc_info=True)
     finally:
         # If ClobClient has a close method, ensure it's called
-        if 'client' in locals():
-            try:
-                client.close()
-            except AttributeError:
-                logger.warning("ClobClient does not have a close method.")
+        pass
+                
+
+shutdown_flag = False
 
 def signal_handler(signum, frame):
     """
     Handles keyboard interrupt signals for graceful shutdown.
     """
+    global shutdown_flag
     logger.info("Keyboard interrupt received. Exiting gracefully...")
+    shutdown_flag = True
     executor.shutdown(wait=False)
-    sys.exit(0)
 
 def main_loop():
     """
-    Main loop that continuously executes the main function at specified intervals.
+    Main loop that continuously executes the main function and auto_sell_filled_orders at specified intervals.
     """
     # Set up the signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
-    
-    while True:
+
+    # Initialize the ClobClient once before the loop
+    try:
+        client = ClobClient(
+            host=POLYMARKET_HOST,
+            chain_id=int(os.getenv("CHAIN_ID")),
+            key=os.getenv("PRIVATE_KEY"),
+            signature_type=2,  # POLY_GNOSIS_SAFE
+            funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
+        )
+        client.set_api_creds(client.create_or_derive_api_creds())
+        logger.info("ClobClient initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize ClobClient: {e}", exc_info=True)
+        sys.exit(1)
+
+    while not shutdown_flag:
         try:
-            # Submit the main task to the executor
-            future = executor.submit(main)
-            logger.info("Submitted main task to ThreadPoolExecutor.")
+            # Submit the main order management task
+            future_main = executor.submit(main, client)
+            logger.info("Submitted main order management task to ThreadPoolExecutor.")
+
+            # Submit the auto_sell_filled_orders task
+            future_auto_sell = executor.submit(auto_sell_filled_orders, client)
+            logger.info("Submitted auto_sell_filled_orders task to ThreadPoolExecutor.")
+
             logger.info("Sleeping for 10 seconds before next iteration...")
-            time.sleep(10)  # You can adjust this interval as needed
+            time.sleep(10)  # Adjust this interval as needed
+
         except Exception as e:
             logger.error(f"Error in main loop: {e}", exc_info=True)
             logger.info("Sleeping for 10 seconds before retry...")
