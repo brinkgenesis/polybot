@@ -23,7 +23,7 @@ def setup_logger():
     logger.propagate = False
 
     # Set the level for the logger
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.WARNING)
 
     return logger
 
