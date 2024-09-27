@@ -1,15 +1,15 @@
-from gamma_market_api import get_high_liquidity_markets
-from int import clob_client
+from gamma_client.gamma_market_api import get_high_liquidity_markets
+from py_clob_client.client import ClobClient, ApiCreds  # Corrected import
 from tqdm import tqdm
 import logging
 from utils.logger_config import main_logger as logger
-
+from config import POLYMARKET_HOST, CHAIN_ID, PRIVATE_KEY, POLYMARKET_PROXY_ADDRESS, POLY_API_KEY, POLY_API_SECRET, POLY_PASSPHRASE
 # Configure logging to show only the message
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 def main():
-    if not clob_client:
+    if not ClobClient:
         raise ValueError("clob_client is not initialized. Please run int.py first.")
 
     logger.info("Fetching high rewards markets from Gamma API")
@@ -20,6 +20,18 @@ def main():
     # Get all markets from CLOB API
     all_clob_markets = []
     next_cursor = ""
+    clob_client = ClobClient(
+       host=POLYMARKET_HOST,                   # From config.py
+       chain_id=CHAIN_ID,                      # From config.py
+       key=PRIVATE_KEY,                        # From config.py              
+       signature_type=2,                       # Adjust based on your setup
+       funder=POLYMARKET_PROXY_ADDRESS         # From config.py
+   )
+    creds = ApiCreds(
+       api_key=POLY_API_KEY,
+       api_secret=POLY_API_SECRET,
+       api_passphrase=POLY_PASSPHRASE
+   )
     with tqdm(total=100, desc="Fetching CLOB markets") as pbar:
         while True:
             resp = clob_client.get_markets(next_cursor=next_cursor)

@@ -96,44 +96,44 @@ def execute_order(client, signed_order):
 def main():
     try:
         # Initialize the ClobClient with all necessary credentials
-         with ClobClient(
+         clob_client = ClobClient(
             host=HOST,
             chain_id=CHAIN_ID,
             key=PRIVATE_KEY,
             signature_type=2,  # POLY_GNOSIS_SAFE
             funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
-        ) as client:
-            client.set_api_creds(client.create_or_derive_api_creds())  # Ensure this is async
-            print_section("ClobClient Initialization", "ClobClient initialized with the following details:")
-            pprint(vars(client))
-            logger.info("ClobClient initialized successfully")
+        )
+         clob_client.set_api_creds(clob_client.create_or_derive_api_creds())  # Ensure this is async
+         print_section("ClobClient Initialization", "ClobClient initialized with the following details:")
+         pprint(vars(clob_client))
+         logger.info("ClobClient initialized successfully")
 
-            # Get order details from user input
-            token_id, size, price, side = get_order_details()
-            print_section("Order Details", f"token_id={token_id}, size={size}, price={price}, side={side}")
+         # Get order details from user input
+         token_id, size, price, side = get_order_details()
+         print_section("Order Details", f"token_id={token_id}, size={size}, price={price}, side={side}")
 
             # Check tick size
-            try:
-                tick_size = client.get_tick_size(token_id)  # Ensure this is async
+         try:
+                tick_size = clob_client.get_tick_size(token_id)  # Ensure this is async
                 print_section("Tick Size", f"Tick size for token {token_id}: {tick_size}")
-            except PolyApiException as e:
+         except PolyApiException as e:
                 print_section("Tick Size Error", f"Failed to get tick size: {e}")
                 if e.status_code == 404:
                     logger.error(f"Market not found for token ID: {token_id}")
                 return
 
             # Build the order
-            try:
-                signed_order = build_order(client, token_id, size, price, side)
+         try:
+                signed_order = build_order(clob_client, token_id, size, price, side)
                 logger.info("Order built successfully")
-            except Exception as e:
+         except Exception as e:
                 print_section("Order Building Error", f"Failed to build order: {e}")
                 return
 
             # Execute the order
-            success, result = execute_order(client, signed_order)
+         success, result = execute_order(clob_client, signed_order)
 
-            if not success:
+         if not success:
                 print_section("Execution Error", f"Order execution failed. Reason: {result}")
 
     except PolyApiException as e:

@@ -31,7 +31,7 @@ RISK_CORE_MANAGEMENT_INTERVAL = 3600
 # Parameters for gamma_market_api.py
 GAMMA_API_PAGE_LIMIT = 100
 GAMMA_API_SORT_PARAM = '-clobRewards.rewardsDailyRate'
-GAMMA_API_MIN_REWARDS_DAILY_RATE = 50
+GAMMA_API_MIN_REWARDS_DAILY_RATE = 25
 GAMMA_API_MAX_MARKETS_TO_RETURN = 10
 
 # Maximum number of markets to process
