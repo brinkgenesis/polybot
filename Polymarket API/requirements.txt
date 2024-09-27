@@ -1,0 +1,56 @@
+# requirements.txt
+
+# Core dependencies
+python-dotenv
+requests
+gql[aiohttp]
+aiohttp
+certifi
+
+# Polymarket API client
+py-clob-client
+
+# Async support
+asyncio
+
+# Subgraph client
+gql[all]
+
+# Logging
+logging
+
+# Date and time handling
+python-dateutil
+
+# Type hinting
+typing
+
+# Configuration management
+configparser
+
+# SSL support
+ssl
+
+# Hashing
+hashlib
+
+# JSON handling
+json
+
+# Math operations
+math
+
+# Time-related functions
+time
+
+# Environment variable management
+os
+
+# Asynchronous HTTP client
+aiohttp
+
+# GraphQL client
+gql
+
+
+# Any additional packages used in your project but not explicitly imported in the provided code snippets
