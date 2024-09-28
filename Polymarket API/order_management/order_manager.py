@@ -30,9 +30,6 @@ executor = ThreadPoolExecutor(max_workers=10)  # Adjust the number of threads as
 # Add this at the top of your file, after other imports
 cancelled_orders_cooldown: Dict[str, float] = {}
 
-# Global dictionary to track tokens on cooldown
-tokens_on_cooldown = {}
-
 def get_market_info_sync(clob_client: ClobClient, token_id: str) -> Dict[str, Any]:
     """
     Synchronously fetches market information for a given token ID.
@@ -138,7 +135,6 @@ def get_market_info(client: ClobClient, token_id: str):
         }
 
 def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: OrderBookSummary) -> List[str]:
-    global tokens_on_cooldown  # Declare the global variable
     orders_to_cancel = []
     
     midpoint = (market_info['best_bid'] + market_info['best_ask']) / 2
@@ -169,8 +165,6 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
                 orders_to_cancel.append(order_id)
                 logger.info(f"Order {shorten_id(order_id)} is not scoring and will be cancelled")
                 cancelled_orders_cooldown[order_id] = time.time()
-                tokens_on_cooldown[token_id] = time.time()
-                logger.info(f"Token {shorten_id(token_id)} added to cooldown due to order not scoring.")
                 continue
 
             # For scoring orders, check other conditions
@@ -210,9 +204,6 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
             if best_bid_value_low:
                 should_cancel = True
                 cancel_reasons.append("best bid value is less than $500")
-                # Add token_id to tokens_on_cooldown
-                tokens_on_cooldown[token_id] = time.time()
-                logger.info(f"Token {shorten_id(token_id)} added to cooldown due to low best bid value.")
             logger.info(f"4. Best bid value < $500: {best_bid_value_low}")
 
             # 5. Order book size check
@@ -307,8 +298,8 @@ def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, 
 
             # Build and execute 30% order
             signed_order_30 = build_order(client, token_id, Decimal(str(order_size_30)), Decimal(str(maker_amount_30)), cancelled_order['side'])
-            logger.debug(f"Signed Order Type: {type(signed_order_30)}")
-            logger.debug(f"Signed Order Content: {signed_order_30}")
+            #logger.debug(f"Signed Order Type: {type(signed_order_30)}")
+            #logger.debug(f"Signed Order Content: {signed_order_30}")
             result_30 = execute_order(client, signed_order_30)
             logger.info(f"30% order executed: {result_30}")
             results.append(result_30)
@@ -320,8 +311,8 @@ def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, 
 
             # Build and execute 70% order
             signed_order_70 = build_order(client, token_id, Decimal(str(order_size_70)), Decimal(str(maker_amount_70)), cancelled_order['side'])
-            logger.debug(f"Signed Order Type: {type(signed_order_70)}")
-            logger.debug(f"Signed Order Content: {signed_order_70}")
+            #logger.debug(f"Signed Order Type: {type(signed_order_70)}")
+            #logger.debug(f"Signed Order Content: {signed_order_70}")
             result_70 = execute_order(client, signed_order_70)
             logger.info(f"70% order executed: {result_70}")
             results.append(result_70)
@@ -426,7 +417,6 @@ def main(client: ClobClient):
     """
     Main function to fetch, process, cancel, and reorder orders.
     """
-    global tokens_on_cooldown  # Declare the global variable
     try:     
         # Fetch open orders
         open_orders = get_open_orders(client)
@@ -443,17 +433,6 @@ def main(client: ClobClient):
         futures = []
 
         for token_id in unique_token_ids:
-            # Check if the token_id is on cooldown
-            if token_id in tokens_on_cooldown:
-                cooldown_time = tokens_on_cooldown[token_id]
-                if time.time() - cooldown_time < 600:  # 600 seconds = 10 minutes
-                    logger.info(f"Token {shorten_id(token_id)} is on cooldown. Skipping processing.")
-                    continue
-                else:
-                    # Remove from cooldown if 10 minutes have passed
-                    del tokens_on_cooldown[token_id]
-                    logger.info(f"Cooldown period ended for token {shorten_id(token_id)}. Proceeding with processing.")
-
             logger.info(format_section(f"Processing token_id: {shorten_id(token_id)}"))
             try:
                 # Fetch order book data
@@ -570,12 +549,12 @@ def main_loop():
             logger.info("Submitted auto_sell_filled_orders task to ThreadPoolExecutor.")
 
             logger.info("Sleeping for 10 seconds before next iteration...")
-            time.sleep(10)  # Adjust this interval as needed
+            time.sleep(7)  # Adjust this interval as needed
 
         except Exception as e:
             logger.error(f"Error in main loop: {e}", exc_info=True)
             logger.info("Sleeping for 10 seconds before retry...")
-            time.sleep(10)
+            time.sleep(7)
 
 if __name__ == "__main__":
     limitOrder_logger.parent = logger
