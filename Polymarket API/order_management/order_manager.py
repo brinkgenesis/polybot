@@ -30,16 +30,13 @@ executor = ThreadPoolExecutor(max_workers=10)  # Adjust the number of threads as
 # Add this at the top of your file, after other imports
 cancelled_orders_cooldown: Dict[str, float] = {}
 
-# Global dictionary to track tokens on cooldown
-tokens_on_cooldown = {}
-
 def get_market_info_sync(clob_client: ClobClient, token_id: str) -> Dict[str, Any]:
     """
     Synchronously fetches market information for a given token ID.
     """
     try:
         market_info = clob_client.get_market_info(token_id)
-        #logger.info(f"Fetched market info for token ID {token_id}: {market_info}")
+        logger.info(f"Fetched market info for token ID {token_id}: {market_info}")
         return market_info
     except Exception as e:
         logger.error(f"Error fetching market info for token ID {token_id}: {e}", exc_info=True)
@@ -51,7 +48,7 @@ def get_order_book_sync(clob_client: ClobClient, token_id: str) -> OrderBookSumm
     """
     try:
         order_book = clob_client.get_order_book(token_id)
-        #logger.info(f"Fetched order book for token ID {token_id}.")
+        logger.info(f"Fetched order book for token ID {token_id}.")
         return order_book
     except Exception as e:
         logger.error(f"Error fetching order book for token ID {token_id}: {e}", exc_info=True)
@@ -75,16 +72,16 @@ def get_order_book_size_at_price(order_book: OrderBookSummary, price: float) -> 
     Retrieves the size of orders at a specific price in the order book.
     """
     price_str = str(price)
-    #logger.info(f"Searching for price: {price_str}")
+    logger.info(f"Searching for price: {price_str}")
     
     for bid in order_book.bids:
         if float(bid.price) == price:
-            #logger.info(f"Matching bid found at price {price_str}, size: {bid.size}")
+            logger.info(f"Matching bid found at price {price_str}, size: {bid.size}")
             return float(bid.size)
     
     for ask in order_book.asks:
         if float(ask.price) == price:
-            #logger.info(f"Matching ask found at price {price_str}, size: {ask.size}")
+            logger.info(f"Matching ask found at price {price_str}, size: {ask.size}")
             return float(ask.size)
     
     logger.info(f"No matching price found for {price_str}")
@@ -138,7 +135,6 @@ def get_market_info(client: ClobClient, token_id: str):
         }
 
 def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: OrderBookSummary) -> List[str]:
-    global tokens_on_cooldown  # Declare the global variable
     orders_to_cancel = []
     
     midpoint = (market_info['best_bid'] + market_info['best_ask']) / 2
@@ -148,7 +144,7 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
     order_ids = [order['id'] for order in open_orders if order['asset_id'] == token_id]
 
     # Check scoring for all orders at once
-    #logger.info(f"Checking scoring for order IDs: {[shorten_id(order_id) for order_id in order_ids]}")
+    logger.info(f"Checking scoring for order IDs: {[shorten_id(order_id) for order_id in order_ids]}")
     scoring_results = run_order_scoring(client, order_ids)
 
     for order in open_orders:
@@ -157,20 +153,18 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
             order_id = order['id']
             order_size = float(order['original_size'])
             
-            #logger.info(format_section(f"Processing order: {format_order_info(order_id, order_price, order_size)}"))
-            #logger.info(f"Market info: {format_market_info(market_info['best_bid'], market_info['best_ask'])}")
+            logger.info(format_section(f"Processing order: {format_order_info(order_id, order_price, order_size)}"))
+            logger.info(f"Market info: {format_market_info(market_info['best_bid'], market_info['best_ask'])}")
 
             # Check if order is scoring
             is_scoring = scoring_results.get(order_id, False)
-            #logger.info(f"Order {shorten_id(order_id)} scoring status: {is_scoring}")
+            logger.info(f"Order {shorten_id(order_id)} scoring status: {is_scoring}")
 
             # If the order is not scoring, cancel it immediately
             if not is_scoring:
                 orders_to_cancel.append(order_id)
-                #logger.info(f"Order {shorten_id(order_id)} is not scoring and will be cancelled")
+                logger.info(f"Order {shorten_id(order_id)} is not scoring and will be cancelled")
                 cancelled_orders_cooldown[order_id] = time.time()
-                tokens_on_cooldown[token_id] = time.time()
-                logger.info(f"Token {shorten_id(token_id)} added to cooldown due to order not scoring.")
                 continue
 
             # For scoring orders, check other conditions
@@ -185,23 +179,23 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
             if outside_reward_range:
                 should_cancel = True
                 cancel_reasons.append("outside the reward range")
-            #logger.info(f"1. Outside reward range: {outside_reward_range}")
+            logger.info(f"1. Outside reward range: {outside_reward_range}")
 
             # 2. Too far from best bid
             too_far_from_best_bid = (market_info['best_bid'] - order_price) > market_info['max_incentive_spread']
             if too_far_from_best_bid:
                 should_cancel = True
                 cancel_reasons.append("too far from best bid")
-            #logger.info(f"2. Too far from best bid: {too_far_from_best_bid}")
+            logger.info(f"2. Too far from best bid: {too_far_from_best_bid}")
 
             # 3. At the best bid
-            #best_bid_excluding_current = max([float(bid.price) for bid in order_book.bids if float(bid.price) != order_price], default=0.0)
+            best_bid_excluding_current = max([float(bid.price) for bid in order_book.bids if float(bid.price) != order_price], default=0.0)
             at_best_bid = order_price == market_info['best_bid']
-            #logger.info(f"Order price: {order_price}, Best bid: {market_info['best_bid']}, Best bid excluding current: {best_bid_excluding_current}")
+            logger.info(f"Order price: {order_price}, Best bid: {market_info['best_bid']}, Best bid excluding current: {best_bid_excluding_current}")
             if at_best_bid:
                 should_cancel = True
                 cancel_reasons.append("at the best bid")
-            #logger.info(f"3. At the best bid: {at_best_bid}")
+            logger.info(f"3. At the best bid: {at_best_bid}")
 
             # 4. Best bid value less than $500
             best_bid_size = get_order_book_size_at_price(order_book, market_info['best_bid'])
@@ -210,10 +204,7 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
             if best_bid_value_low:
                 should_cancel = True
                 cancel_reasons.append("best bid value is less than $500")
-                # Add token_id to tokens_on_cooldown
-                tokens_on_cooldown[token_id] = time.time()
-                logger.info(f"Token {shorten_id(token_id)} added to cooldown due to low best bid value.")
-            #logger.info(f"4. Best bid value < $500: {best_bid_value_low}")
+            logger.info(f"4. Best bid value < $500: {best_bid_value_low}")
 
             # 5. Order book size check
             order_book_size = get_order_book_size_at_price(order_book, order_price)
@@ -222,7 +213,7 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
             if order_size_too_large:
                 should_cancel = True
                 cancel_reasons.append("order size is >= 50% of order book size")
-            #logger.info(f"5. Order size >= 50% of order book size: {order_size_too_large}")
+            logger.info(f"5. Order size >= 50% of order book size: {order_size_too_large}")
 
             # Final decision for scoring orders
             if should_cancel:
@@ -234,16 +225,16 @@ def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, ma
     # Cancel all orders that meet the conditions
     if orders_to_cancel:
         try:
-            #logger.info(f"Attempting to cancel orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+            logger.info(f"Attempting to cancel orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
             client.cancel_orders(orders_to_cancel)
-            #logger.info(f"Successfully cancelled orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+            logger.info(f"Successfully cancelled orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
         except Exception as e:
             logger.error(f"Failed to cancel orders: {str(e)}")
             orders_to_cancel = []
     else:
         logger.info("No orders to cancel")
 
-    #logger.info("Finished processing all orders for this token ID")
+    logger.info("Finished processing all orders for this token ID")
     return orders_to_cancel
 
 def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, market_info: Dict[str, Any]) -> List[str]:
@@ -257,12 +248,12 @@ def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, 
         if order_id in cancelled_orders_cooldown:
             cooldown_time = cancelled_orders_cooldown[order_id]
             if time.time() - cooldown_time < 600:  # 600 seconds = 10 minutes
-                #logger.info(f"Order {shorten_id(order_id)} is on cooldown. Skipping reorder.")
+                logger.info(f"Order {shorten_id(order_id)} is on cooldown. Skipping reorder.")
                 return []
             else:
                 # Remove from cooldown if 10 minutes have passed
                 del cancelled_orders_cooldown[order_id]
-                #logger.info(f"Cooldown period ended for order {shorten_id(order_id)}. Proceeding with reorder.")
+                logger.info(f"Cooldown period ended for order {shorten_id(order_id)}. Proceeding with reorder.")
 
         # Set total order size
         total_order_size = float(cancelled_order.get('size') or cancelled_order.get('original_size', 0))
@@ -287,35 +278,35 @@ def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, 
         # Check if orders exceed the maximum allowed difference from best bid
         min_allowed_price = best_bid - max_incentive_spread
         if maker_amount_30 < min_allowed_price:
-            #logger.info("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
+            logger.info("30% order exceeds maximum allowed difference from best bid. Adjusting price.")
             maker_amount_30 = min_allowed_price
         if maker_amount_70 < min_allowed_price:
-            #logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
+            logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
             maker_amount_70 = min_allowed_price
 
-        #logger.info(f"Best Bid: {best_bid}")
-        #logger.info(f"Maker Amount 30%: {maker_amount_30}")
-        #logger.info(f"Maker Amount 70%: {maker_amount_70}")
+        logger.info(f"Best Bid: {best_bid}")
+        logger.info(f"Maker Amount 30%: {maker_amount_30}")
+        logger.info(f"Maker Amount 70%: {maker_amount_70}")
 
         # Build and execute orders
         results = []
         try:
             # Adjust 30% order size if below minimum
             if order_size_30 < MIN_ORDER_SIZE:
-               #logger.info(f"30% order size {order_size_30} is below minimum {MIN_ORDER_SIZE}. Setting to minimum.")
+                logger.info(f"30% order size {order_size_30} is below minimum {MIN_ORDER_SIZE}. Setting to minimum.")
                 order_size_30 = MIN_ORDER_SIZE
 
             # Build and execute 30% order
             signed_order_30 = build_order(client, token_id, Decimal(str(order_size_30)), Decimal(str(maker_amount_30)), cancelled_order['side'])
-            logger.debug(f"Signed Order Type: {type(signed_order_30)}")
-            logger.debug(f"Signed Order Content: {signed_order_30}")
+            #logger.debug(f"Signed Order Type: {type(signed_order_30)}")
+            #logger.debug(f"Signed Order Content: {signed_order_30}")
             result_30 = execute_order(client, signed_order_30)
-            #logger.info(f"30% order executed: {result_30}")
+            logger.info(f"30% order executed: {result_30}")
             results.append(result_30)
 
             # Adjust 70% order size if below minimum
             if order_size_70 < MIN_ORDER_SIZE:
-                #logger.info(f"70% order size {order_size_70} is below minimum {MIN_ORDER_SIZE}. Setting to minimum.")
+                logger.info(f"70% order size {order_size_70} is below minimum {MIN_ORDER_SIZE}. Setting to minimum.")
                 order_size_70 = MIN_ORDER_SIZE
 
             # Build and execute 70% order
@@ -323,7 +314,7 @@ def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, 
             #logger.debug(f"Signed Order Type: {type(signed_order_70)}")
             #logger.debug(f"Signed Order Content: {signed_order_70}")
             result_70 = execute_order(client, signed_order_70)
-            #logger.info(f"70% order executed: {result_70}")
+            logger.info(f"70% order executed: {result_70}")
             results.append(result_70)
 
         except Exception as e:
@@ -365,7 +356,7 @@ def auto_sell_filled_orders(client: ClobClient):
                 # Sort bids in descending order to get the best (highest) bid price
                 sorted_bids = sorted(order_book.bids, key=lambda x: float(x.price), reverse=True)
                 best_bid_price = float(sorted_bids[0].price)
-                #logger.info(f"Best bid price for token {token_id}: {best_bid_price}")
+                logger.info(f"Best bid price for token {token_id}: {best_bid_price}")
 
                 # Build the order
                 try:
@@ -426,7 +417,6 @@ def main(client: ClobClient):
     """
     Main function to fetch, process, cancel, and reorder orders.
     """
-    global tokens_on_cooldown  # Declare the global variable
     try:     
         # Fetch open orders
         open_orders = get_open_orders(client)
@@ -443,17 +433,6 @@ def main(client: ClobClient):
         futures = []
 
         for token_id in unique_token_ids:
-            # Check if the token_id is on cooldown
-            if token_id in tokens_on_cooldown:
-                cooldown_time = tokens_on_cooldown[token_id]
-                if time.time() - cooldown_time < 600:  # 600 seconds = 10 minutes
-                    logger.info(f"Token {shorten_id(token_id)} is on cooldown. Skipping processing.")
-                    continue
-                else:
-                    # Remove from cooldown if 10 minutes have passed
-                    del tokens_on_cooldown[token_id]
-                    logger.info(f"Cooldown period ended for token {shorten_id(token_id)}. Proceeding with processing.")
-
             logger.info(format_section(f"Processing token_id: {shorten_id(token_id)}"))
             try:
                 # Fetch order book data
@@ -554,7 +533,7 @@ def main_loop():
             funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
         )
         client.set_api_creds(client.create_or_derive_api_creds())
-        #logger.info("ClobClient initialized successfully")
+        logger.info("ClobClient initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize ClobClient: {e}", exc_info=True)
         sys.exit(1)
@@ -563,19 +542,19 @@ def main_loop():
         try:
             # Submit the main order management task
             future_main = executor.submit(main, client)
-            #logger.info("Submitted main order management task to ThreadPoolExecutor.")
+            logger.info("Submitted main order management task to ThreadPoolExecutor.")
 
             # Submit the auto_sell_filled_orders task
             future_auto_sell = executor.submit(auto_sell_filled_orders, client)
-            #logger.info("Submitted auto_sell_filled_orders task to ThreadPoolExecutor.")
+            logger.info("Submitted auto_sell_filled_orders task to ThreadPoolExecutor.")
 
-            #logger.info("Sleeping for 10 seconds before next iteration...")
-            time.sleep(10)  # Adjust this interval as needed
+            logger.info("Sleeping for 10 seconds before next iteration...")
+            time.sleep(7)  # Adjust this interval as needed
 
         except Exception as e:
             logger.error(f"Error in main loop: {e}", exc_info=True)
             logger.info("Sleeping for 10 seconds before retry...")
-            time.sleep(10)
+            time.sleep(7)
 
 if __name__ == "__main__":
     limitOrder_logger.parent = logger

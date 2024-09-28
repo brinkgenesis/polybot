@@ -17,7 +17,7 @@ class CustomFormatter(logging.Formatter):
         return record.getMessage()
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 
 # Remove any existing handlers
 for handler in logger.handlers[:]:
