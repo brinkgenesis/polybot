@@ -1,70 +1,105 @@
-import websockets
 import asyncio
+import websockets
 import json
-import threading
-from py_clob_client.client import ClobClient
 import logging
-from utils.utils import run_sync_in_thread
+import ssl
+import certifi  # Import certifi for certificate verification
+from typing import Any, Callable, Dict
 
- 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-# class ClobWebsocketClient:
-#     def __init__(self, clob_client: ClobClient, uri: str = "wss://clob.polymarket.com/ws"):
-#         """
-#            Initializes the WebSocket client for the CLOB.
-#
-#            :param clob_client: Instance of ClobClient.
-#            :param uri: WebSocket URI for the CLOB.
-#            """
-#         self.clob_client = clob_client
-#         self.uri = uri
-#         self.logger = logging.getLogger(self.__class__.__name__)
-#         self.websocket = None
-#
-#     async def connect(self):
-#         """
-#         Establishes the WebSocket connection.
-#            """
-#         try:
-#             self.websocket = await websockets.connect(self.uri)
-#             self.logger.info("Connected to WebSocket.")
-#         except Exception as e:
-#             self.logger.error(f"Failed to connect to WebSocket: {e}", exc_info=True)
-#
-#     async def subscribe_to_market_channel(self, market_id: str):
-#            """
-#            Subscribes to the market channel for a specific market ID.
-#
-#            :param market_id: The market ID to subscribe to.
-#            """
-#            subscription_message = json.dumps({
-#                "type": "subscribe",
-#                "channel": "market",
-#                "market": market_id
-#            })
-#            try:
-#                await self.websocket.send(subscription_message)
-#                self.logger.info(f"Subscribed to market channel: {market_id}")
-#            except Exception as e:
-#                self.logger.error(f"Failed to subscribe to market channel {market_id}: {e}", exc_info=True)
-#
-#     async def market_websocket(self):
-#            """
-#            Asynchronously listens to the WebSocket for market events.
-#
-#            Yields:
-#                Messages received from the WebSocket.
-#            """
-#            await self.connect()
-#            # Subscribe to all relevant market channels
-#            markets = await run_sync_in_thread(self.clob_client.get_sampling_markets)
-#            for market in markets:
-#                await self.subscribe_to_market_channel(market['token_id'])
-#            
-#            try:
-#                async for message in self.websocket:
-#                    yield message
-#            except websockets.ConnectionClosed:
-#                self.logger.warning("WebSocket connection closed.")
-#            except Exception as e:
-#                self.logger.error(f"Error in WebSocket connection: {e}", exc_info=True)
+class ClobWebSocketClient:
+    def __init__(self, ws_url: str):
+        self.ws_url = ws_url  # Use the passed ws_url
+        self.connection = None
+        self.logger = logging.getLogger(__name__)
+        self.stop_event = asyncio.Event()
+
+    async def connect(self):
+        self.logger.info(f"Connecting to WebSocket at {self.ws_url}")
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        try:
+            self.connection = await websockets.connect(self.ws_url, ssl=ssl_context)
+            self.logger.info("WebSocket connection established.")
+            await self.subscribe_channels()
+        except websockets.InvalidStatusCode as e:
+            self.logger.error(f"Failed to connect: {e}. Status code: {e.status_code}")
+            raise
+        except asyncio.TimeoutError:
+            self.logger.error("Connection attempt timed out.")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error during WebSocket connection: {e}", exc_info=True)
+            raise
+
+    async def subscribe_channels(self):
+        """
+        Subscribe to required channels on the WebSocket.
+        Modify this method if subscription isn't needed or requires different parameters.
+        """
+        # Example subscription payload for the 'market' channel
+        market_channel_sub = {
+            "type": "subscribe",
+            "channel": "market",
+            # Add additional fields if necessary
+        }
+
+        try:
+            self.logger.info("Subscribing to market channel.")
+            await self.connection.send(json.dumps(market_channel_sub))
+            market_response = await self.connection.recv()
+            self.logger.info(f"Market channel subscription response: {market_response}")
+        except Exception as e:
+            self.logger.error(f"Error during channel subscription: {e}", exc_info=True)
+            await self.connection.close()
+            raise
+
+    async def listen(self):
+        """
+        Listen to incoming messages from the WebSocket.
+        """
+        self.logger.info("Started listening to WebSocket messages.")
+        try:
+            async for message in self.connection:
+                self.logger.debug(f"Received message: {message}")
+                # Handle incoming messages here
+                # You can parse the message and perform actions or callbacks as needed
+        except websockets.ConnectionClosed as e:
+            self.logger.warning(f"WebSocket connection closed: {e.code} - {e.reason}")
+        except Exception as e:
+            self.logger.error(f"Error while listening to WebSocket: {e}", exc_info=True)
+        finally:
+            await self.connection.close()
+            self.logger.info("WebSocket connection closed.")
+
+    async def disconnect(self):
+        """
+        Gracefully close the WebSocket connection.
+        """
+        if self.connection and not self.connection.closed:
+            await self.connection.close()
+            self.logger.info("WebSocket connection has been closed.")
+
+    async def run_async(self):
+        """
+        Asynchronously run the WebSocket client.
+        """
+        try:
+            await self.connect()
+            await self.listen()
+        except Exception as e:
+            self.logger.error(f"Failed to run WebSocket client: {e}", exc_info=True)
+        finally:
+            await self.disconnect()
+
+    def run(self):
+        """
+        Run the WebSocket client in an asyncio event loop.
+        """
+        try:
+            asyncio.run(self.run_async())
+        except Exception as e:
+            self.logger.error(f"Unhandled exception in WebSocket client: {e}", exc_info=True)
+        finally:
+            self.logger.info("WebSocket client has been stopped.")
