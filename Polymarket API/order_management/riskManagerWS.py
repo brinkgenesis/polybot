@@ -1,31 +1,37 @@
 import logging
 import asyncio
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, List
 from datetime import datetime, timedelta, timezone
 import time
-import config
 import ssl
 import certifi
 import os
-
+import json
 from clob_client.clob_websocket_client import ClobWebSocketClient
 from py_clob_client.client import ClobClient, OpenOrderParams
 from utils.utils import shorten_id
+from decimal import Decimal
 
+from order_management.limitOrder import build_order, execute_order  # Import existing order functions
 
-# Load environment variables (if using a .env file, consider using python-dotenv)
-API_KEY = os.getenv("CLOB_API_KEY")
-API_SECRET = os.getenv("CLOB_API_SECRET")
-API_PASSPHRASE = os.getenv("CLOB_API_PASSPHRASE")
+# Load environment variables (assuming using python-dotenv)
+API_KEY = os.getenv("POLY_API_KEY")
+API_SECRET = os.getenv("POLY_API_SECRET")
+API_PASSPHRASE = os.getenv("POLY_PASSPHRASE")
+POLYMARKET_HOST = os.getenv("POLYMARKET_HOST")
+CHAIN_ID = int(os.getenv("CHAIN_ID"))
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+POLYMARKET_PROXY_ADDRESS = os.getenv("POLYMARKET_PROXY_ADDRESS")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-# Configure logging format
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+# Configure logging format if not already done
+if not logger.hasHandlers():
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 class RiskManagerWS:
     def __init__(self, client: ClobClient):
@@ -33,9 +39,9 @@ class RiskManagerWS:
         self.token_ids = set()
         self.cooldown_tokens: Dict[str, datetime] = {}
         self.cooldown_duration = timedelta(minutes=10)
-        self.ws_client = ClobWebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market"  # Corrected URL
-        )
+        self.token_event_amounts: Dict[str, float] = {}
+        self.token_event_timestamps: Dict[str, datetime] = {}
+        self.ws_client = None  # Will be initialized after fetching token IDs
 
     def fetch_open_orders(self):
         try:
@@ -47,92 +53,189 @@ class RiskManagerWS:
         except Exception as e:
             logger.error(f"Failed to fetch open orders: {e}", exc_info=True)
 
-    def on_trade(self, trade_data: Dict[str, Any]):
-        token_id = trade_data.get('tokenId')
-        trade_size = float(trade_data.get('size', 0))
-        trade_price = float(trade_data.get('price', 0))
-        trade_value = trade_size * trade_price
+    async def handle_message(self, data: Dict[str, Any]):
+        event_type = data.get('event_type')
 
-        if token_id in self.token_ids:
-            logger.info(f"Received trade for token {shorten_id(token_id)}: Size={trade_size}, Price={trade_price}")
+        if event_type == 'price_change':
+            await self.handle_price_change(data)
+        elif event_type == 'book':
+            await self.handle_book_event(data)
+        else:
+            logger.warning(f"Unhandled event type: {event_type}")
 
-            if trade_value >= 500:
-                logger.info(f"Trade value ${trade_value} exceeds threshold for token {shorten_id(token_id)}")
-                # Cancel orders for this token_id
-                self.cancel_orders_for_token(token_id)
-                # Place token_id on cooldown
-                self.cooldown_tokens[token_id] = datetime.now(timezone.utc) + self.cooldown_duration
-                # Remove token_id from active monitoring
+    async def handle_price_change(self, data: Dict[str, Any]):
+        asset_id = data.get('asset_id')
+        side = data.get('side')
+        price = float(data.get('price', 0))
+        size = float(data.get('size', 0))
+        timestamp_ms = int(data.get('timestamp', 0))
+        timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+
+        amount = price * size
+
+        if side.lower() == 'sell' and asset_id in self.token_ids:
+            logger.info(f"Received price_change for token {shorten_id(asset_id)}: Side={side}, Price={price}, Size={size}, Amount={amount}")
+
+            # Update the total amount and timestamps for the asset_id
+            if asset_id not in self.token_event_amounts:
+                self.token_event_amounts[asset_id] = amount
+                self.token_event_timestamps[asset_id] = timestamp
+            else:
+                time_diff = (timestamp - self.token_event_timestamps[asset_id]).total_seconds()
+                if time_diff <= 5:
+                    self.token_event_amounts[asset_id] += amount
+                else:
+                    self.token_event_amounts[asset_id] = amount
+                    self.token_event_timestamps[asset_id] = timestamp
+
+            # Check if amount exceeds $500 in a single transaction or within 5 seconds
+            if amount >= 500 or self.token_event_amounts[asset_id] >= 500:
+                logger.info(f"Threshold exceeded for token {shorten_id(asset_id)}. Cancelling orders.")
+                await self.cancel_and_reorder(asset_id)
+
+    async def handle_book_event(self, data: Dict[str, Any]):
+        """
+        Handle 'book' event messages.
+        Currently, this method can be extended based on requirements.
+        """
+        asset_id = data.get("asset_id")
+        market = data.get("market")
+        timestamp = data.get("timestamp")
+        buys = data.get("buys", [])
+        sells = data.get("sells", [])
+        hash_summary = data.get("hash")
+        
+        self.logger.info(f"Book Update for Market: {market} | Asset ID: {asset_id} | Timestamp: {timestamp}")
+        self.logger.debug(f"Buys: {buys}")
+        self.logger.debug(f"Sells: {sells}")
+        self.logger.debug(f"Hash: {hash_summary}")
+        # Implement further processing as needed
+
+    async def cancel_and_reorder(self, token_id: str):
+        try:
+            # Cancel all orders for this token_id
+            open_orders = self.client.get_orders(OpenOrderParams())
+            orders_to_cancel = [order['id'] for order in open_orders if order['asset_id'] == token_id]
+            if orders_to_cancel:
+                self.client.cancel_orders(orders_to_cancel)
+                logger.info(f"Cancelled orders for token {shorten_id(token_id)}: {orders_to_cancel}")
+            else:
+                logger.info(f"No open orders to cancel for token {shorten_id(token_id)}.")
+
+            # Place token_id on cooldown
+            self.cooldown_tokens[token_id] = datetime.now(timezone.utc) + self.cooldown_duration
+            # Remove token_id from active monitoring
+            if token_id in self.token_ids:
                 self.token_ids.remove(token_id)
 
-    def cancel_orders_for_token(self, token_id: str):
-        try:
-            open_orders = self.client.get_orders(OpenOrderParams())
-            orders_to_cancel = [order for order in open_orders if order['asset_id'] == token_id]
-            if orders_to_cancel:
-                order_ids = [order['id'] for order in orders_to_cancel]
-                self.client.cancel_orders(order_ids)
-                logger.info(f"Cancelled orders for token {shorten_id(token_id)}: {order_ids}")
-            else:
-                logger.warning(f"No open orders found for token {shorten_id(token_id)} to cancel.")
+            # Reorder
+            await self.reorder(token_id)
+
         except Exception as e:
-            logger.error(f"Failed to cancel orders for token {shorten_id(token_id)}: {e}", exc_info=True)
+            logger.error(f"Failed during cancel and reorder for token {shorten_id(token_id)}: {e}", exc_info=True)
+
+    async def reorder(self, token_id: str):
+        # Fetch market info
+        try:
+            market_info = self.client.get_market_info(token_id)
+            best_bid = float(market_info['best_bid'])
+            best_ask = float(market_info['best_ask'])
+            tick_size = float(market_info['tick_size'])
+            max_incentive_spread = float(market_info['max_incentive_spread'])
+
+            logger.info(f"Market info for token {shorten_id(token_id)}: Best Bid={best_bid}, Best Ask={best_ask}, Tick Size={tick_size}, Max Incentive Spread={max_incentive_spread}")
+        except Exception as e:
+            logger.error(f"Error fetching market info for token {shorten_id(token_id)}: {e}", exc_info=True)
+            return
+
+        # Build orders
+        try:
+            side = 'BUY'  # Adjust side as needed based on your strategy
+            order_value = 500  # Total value to allocate
+
+            order_size_30 = (order_value * 0.3) / best_bid  # 30% of $500
+            order_size_70 = (order_value * 0.7) / best_bid  # 70% of $500
+
+            maker_price_30 = best_bid - tick_size  # Adjust price as per tick_size
+            maker_amount_30 = maker_price_30
+
+            maker_price_70 = best_bid - (tick_size * 2)  # Further adjust if needed
+            maker_amount_70 = maker_price_70
+
+            # Build and execute 30% order
+            signed_order_30 = build_order(
+                self.client,
+                token_id,
+                Decimal(str(order_size_30)),
+                Decimal(str(maker_amount_30)),
+                side
+            )
+            success_30, result_30 = execute_order(self.client, signed_order_30)
+            if success_30:
+                logger.info(f"Placed reorder (30%) for token {shorten_id(token_id)} at price {maker_amount_30}")
+            else:
+                logger.error(f"Failed to place reorder (30%) for token {shorten_id(token_id)}: {result_30}")
+
+            # Build and execute 70% order
+            signed_order_70 = build_order(
+                self.client,
+                token_id,
+                Decimal(str(order_size_70)),
+                Decimal(str(maker_amount_70)),
+                side
+            )
+            success_70, result_70 = execute_order(self.client, signed_order_70)
+            if success_70:
+                logger.info(f"Placed reorder (70%) for token {shorten_id(token_id)} at price {maker_amount_70}")
+            else:
+                logger.error(f"Failed to place reorder (70%) for token {shorten_id(token_id)}: {result_70}")
+
+        except Exception as e:
+            logger.error(f"Error during reorder for token {shorten_id(token_id)}: {e}", exc_info=True)
+
+    async def subscribe_new_asset(self, token_id: str):
+        """
+        Optional: Implement dynamic subscription to a new asset.
+        This method can be called when re-adding a token after cooldown.
+        """
+        try:
+            await self.ws_client.connection.send(json.dumps({
+                "asset_ids": [token_id],
+                "type": "Market",
+            }))
+            logger.info(f"Subscribed to new asset: {shorten_id(token_id)}")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to new asset {shorten_id(token_id)}: {e}", exc_info=True)
+
+    async def connect_websocket(self):
+        if not self.ws_client:
+            self.ws_client = ClobWebSocketClient(
+                ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+                asset_ids=list(self.token_ids),
+                message_handler=self.handle_message
+            )
+        try:
+            await self.ws_client.run_async()
+        except Exception as e:
+            logger.error(f"WebSocket client encountered an error: {e}", exc_info=True)
+
+    async def monitor_trades(self):
+        await self.connect_websocket()
 
     def check_cooldown_tokens(self):
         now = datetime.now(timezone.utc)
         for token_id, cooldown_time in list(self.cooldown_tokens.items()):
             if cooldown_time <= now:
-                # Check market depth
-                best_bid = self.client.get_best_bid(token_id)
-                if best_bid:
-                    trade_value = best_bid['price'] * best_bid['size']
-                    if trade_value >= 500:
-                        # Reorder logic here
-                        self.place_order(token_id)
-                        # Remove from cooldown
-                        del self.cooldown_tokens[token_id]
-                        logger.info(f"Reordered token {shorten_id(token_id)} after cooldown.")
-                    else:
-                        # Extend cooldown
-                        self.cooldown_tokens[token_id] = now + self.cooldown_duration
-                        logger.info(f"Extended cooldown for token {shorten_id(token_id)} due to insufficient trade value ${trade_value}.")
-                else:
-                    # If no best bid found, extend cooldown
-                    self.cooldown_tokens[token_id] = now + self.cooldown_duration
-                    logger.info(f"Extended cooldown for token {shorten_id(token_id)} due to missing best bid.")
-
-    def place_order(self, token_id: str):
-        # Implement your order placement logic here
-        logger.info(f"Placing order for token {shorten_id(token_id)}")
-        # Example placeholder:
-        # size = calculate_order_size(token_id)
-        # price = determine_order_price(token_id)
-        # side = determine_order_side(token_id)
-        # signed_order = build_order(self.client, token_id, size, price, side)
-        # success, result = execute_order(self.client, signed_order)
-        pass
-
-    async def monitor_trades(self):
-        try:
-            await self.ws_client.connect()
-        except Exception as e:
-            logger.error(f"Failed to connect to WebSocket: {e}", exc_info=True)
-            return
-
-        # Subscribe to trade events for the token_ids
-        for token_id in self.token_ids:
-            try:
-                # Assuming the WebSocket sends trade events that are captured in the on_trade callback
-                # Modify as per actual implementation
-                logger.info(f"Subscribed to trade events for token {shorten_id(token_id)}.")
-            except Exception as e:
-                logger.error(f"Failed to subscribe to trades for token {shorten_id(token_id)}: {e}", exc_info=True)
-
-        # Keep the websocket connection alive
-        try:
-            await self.ws_client.listen()
-        except Exception as e:
-            logger.error(f"Error while listening to WebSocket: {e}", exc_info=True)
+                logger.info(f"Cooldown ended for token {shorten_id(token_id)}. Adding back to monitoring.")
+                self.token_ids.add(token_id)
+                del self.cooldown_tokens[token_id]
+                # Optionally, resubscribe to the token's events
+                if self.ws_client:
+                    self.ws_client.asset_ids.append(token_id)
+                    asyncio.run_coroutine_threadsafe(
+                        self.subscribe_new_asset(token_id),
+                        asyncio.get_event_loop()
+                    )
 
     def run(self):
         # Fetch open orders and get token IDs
@@ -157,19 +260,25 @@ class RiskManagerWS:
             logger.info("Shutting down RiskManagerWS...")
             # Close websocket connection
             loop.call_soon_threadsafe(loop.stop)
-            self.ws_client.connection.close()
+            if self.ws_client and self.ws_client.connection:
+                loop.run_until_complete(self.ws_client.disconnect())
             thread.join()
             logger.info("RiskManagerWS shutdown complete.")
 
 def main():
     logging.basicConfig(level=logging.INFO)
-
+    creds = {
+        'apiKey': API_KEY,
+        'secret': API_SECRET,
+        'passphrase': API_PASSPHRASE,
+    }
     client = ClobClient(
-        host=config.POLYMARKET_HOST,
-        chain_id=config.CHAIN_ID,
-        key=config.PRIVATE_KEY,
+        host=POLYMARKET_HOST,
+        chain_id=CHAIN_ID,
+        key=PRIVATE_KEY,
+        creds=creds,
         signature_type=2,  # POLY_GNOSIS_SAFE
-        funder=config.POLYMARKET_PROXY_ADDRESS
+        funder=POLYMARKET_PROXY_ADDRESS
     )
     client.set_api_creds(client.create_or_derive_api_creds())
     risk_manager = RiskManagerWS(client)
