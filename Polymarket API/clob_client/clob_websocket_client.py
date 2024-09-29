@@ -11,13 +11,13 @@ logger.setLevel(logging.INFO)
 
 class ClobWebSocketClient:
     def __init__(self, ws_url: str, asset_ids: list, message_handler: Callable[[Dict[str, Any]], Any]):
-        self.ws_url = ws_url  # Corrected WebSocket URL
+        self.ws_url = ws_url  # WebSocket URL
         self.asset_ids = asset_ids  # List of asset IDs to subscribe to
         self.connection = None
         self.logger = logging.getLogger(__name__)
         self.stop_event = asyncio.Event()
         self.message_handler = message_handler  # Callback for handling messages
- 
+
     async def connect(self):
         self.logger.info(f"Connecting to WebSocket at {self.ws_url}")
         ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -34,12 +34,15 @@ class ClobWebSocketClient:
         except Exception as e:
             self.logger.error(f"Unexpected error during connection: {e}", exc_info=True)
             raise
-            
+
     async def subscribe_channels(self):
-        # Subscription payload
+        """
+        Subscribe to the market channel with the provided asset_ids.
+        """
+        # Corrected subscription payload with snake_case
         market_channel_sub = {
-            "asset_ids": self.asset_ids,  # List of asset IDs to subscribe to
-            "type": "market"
+            "asset_ids": self.asset_ids,  # Use 'asset_ids' with snake_case
+            "type": "Market"
         }
 
         try:

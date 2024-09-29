@@ -36,20 +36,26 @@ if not logger.hasHandlers():
 class RiskManagerWS:
     def __init__(self, client: ClobClient):
         self.client = client
-        self.token_ids = set()
+        self.asset_ids = set()
         self.cooldown_tokens: Dict[str, datetime] = {}
         self.cooldown_duration = timedelta(minutes=10)
         self.token_event_amounts: Dict[str, float] = {}
         self.token_event_timestamps: Dict[str, datetime] = {}
-        self.ws_client = None  # Will be initialized after fetching token IDs
+        self.ws_client: ClobWebSocketClient = None  # Will be initialized after fetching asset IDs
 
     def fetch_open_orders(self):
+        """
+        Fetch open orders and extract unique asset_ids.
+        """
         try:
-            open_orders = self.client.get_orders(OpenOrderParams())
-            for order in open_orders:
-                token_id = order['asset_id']
-                self.token_ids.add(token_id)
-            logger.info(f"Token IDs from open orders: {[shorten_id(tid) for tid in self.token_ids]}")
+            all_open_orders = []
+            for asset_id in self.asset_ids:
+                open_orders = self.client.get_orders(OpenOrderParams(asset_id=asset_id))
+                all_open_orders.extend(open_orders)
+            
+            # Update asset_ids based on fetched orders
+            self.asset_ids = {order['asset_id'] for order in all_open_orders}
+            logger.info(f"Fetched {len(self.asset_ids)} unique asset_ids from open orders.")
         except Exception as e:
             logger.error(f"Failed to fetch open orders: {e}", exc_info=True)
 
@@ -73,7 +79,7 @@ class RiskManagerWS:
 
         amount = price * size
 
-        if side.lower() == 'sell' and asset_id in self.token_ids:
+        if side.lower() == 'sell' and asset_id in self.asset_ids:
             logger.info(f"Received price_change for token {shorten_id(asset_id)}: Side={side}, Price={price}, Size={size}, Amount={amount}")
 
             # Update the total amount and timestamps for the asset_id
@@ -111,41 +117,39 @@ class RiskManagerWS:
         self.logger.debug(f"Hash: {hash_summary}")
         # Implement further processing as needed
 
-    async def cancel_and_reorder(self, token_id: str):
+    async def cancel_and_reorder(self, asset_id: str):
+        """
+        Cancel existing orders for the given asset_id and place new ones.
+        """
         try:
-            # Cancel all orders for this token_id
-            open_orders = self.client.get_orders(OpenOrderParams())
-            orders_to_cancel = [order['id'] for order in open_orders if order['asset_id'] == token_id]
+            # Cancel all orders for this asset_id
+            open_orders = self.client.get_orders(OpenOrderParams(asset_id=asset_id))
+            orders_to_cancel = [order['id'] for order in open_orders if order['asset_id'] == asset_id]
             if orders_to_cancel:
-                self.client.cancel_orders(orders_to_cancel)
-                logger.info(f"Cancelled orders for token {shorten_id(token_id)}: {orders_to_cancel}")
+                cancel_response = self.client.cancel_orders(orders_to_cancel)
+                logger.info(f"Cancelled orders for asset {shorten_id(asset_id)}: {orders_to_cancel}")
             else:
-                logger.info(f"No open orders to cancel for token {shorten_id(token_id)}.")
-
-            # Place token_id on cooldown
-            self.cooldown_tokens[token_id] = datetime.now(timezone.utc) + self.cooldown_duration
-            # Remove token_id from active monitoring
-            if token_id in self.token_ids:
-                self.token_ids.remove(token_id)
+                logger.info(f"No orders to cancel for asset {shorten_id(asset_id)}.")
 
             # Reorder
-            await self.reorder(token_id)
+            await self.reorder(asset_id)
 
         except Exception as e:
-            logger.error(f"Failed during cancel and reorder for token {shorten_id(token_id)}: {e}", exc_info=True)
+            logger.error(f"Failed during cancel and reorder for asset {shorten_id(asset_id)}: {e}", exc_info=True)
 
-    async def reorder(self, token_id: str):
+
+    async def reorder(self, asset_id: str):
         # Fetch market info
         try:
-            market_info = self.client.get_market_info(token_id)
+            market_info = self.client.get_market_info(asset_id)
             best_bid = float(market_info['best_bid'])
             best_ask = float(market_info['best_ask'])
             tick_size = float(market_info['tick_size'])
             max_incentive_spread = float(market_info['max_incentive_spread'])
 
-            logger.info(f"Market info for token {shorten_id(token_id)}: Best Bid={best_bid}, Best Ask={best_ask}, Tick Size={tick_size}, Max Incentive Spread={max_incentive_spread}")
+            logger.info(f"Market info for token {shorten_id(asset_id)}: Best Bid={best_bid}, Best Ask={best_ask}, Tick Size={tick_size}, Max Incentive Spread={max_incentive_spread}")
         except Exception as e:
-            logger.error(f"Error fetching market info for token {shorten_id(token_id)}: {e}", exc_info=True)
+            logger.error(f"Error fetching market info for token {shorten_id(asset_id)}: {e}", exc_info=True)
             return
 
         # Build orders
@@ -165,53 +169,54 @@ class RiskManagerWS:
             # Build and execute 30% order
             signed_order_30 = build_order(
                 self.client,
-                token_id,
+                asset_id,
                 Decimal(str(order_size_30)),
                 Decimal(str(maker_amount_30)),
                 side
             )
             success_30, result_30 = execute_order(self.client, signed_order_30)
             if success_30:
-                logger.info(f"Placed reorder (30%) for token {shorten_id(token_id)} at price {maker_amount_30}")
+                logger.info(f"Placed reorder (30%) for token {shorten_id(asset_id)} at price {maker_amount_30}")
             else:
-                logger.error(f"Failed to place reorder (30%) for token {shorten_id(token_id)}: {result_30}")
+                logger.error(f"Failed to place reorder (30%) for token {shorten_id(asset_id)}: {result_30}")
 
             # Build and execute 70% order
             signed_order_70 = build_order(
                 self.client,
-                token_id,
+                asset_id,
                 Decimal(str(order_size_70)),
                 Decimal(str(maker_amount_70)),
                 side
             )
             success_70, result_70 = execute_order(self.client, signed_order_70)
             if success_70:
-                logger.info(f"Placed reorder (70%) for token {shorten_id(token_id)} at price {maker_amount_70}")
+                logger.info(f"Placed reorder (70%) for token {shorten_id(asset_id)} at price {maker_amount_70}")
             else:
-                logger.error(f"Failed to place reorder (70%) for token {shorten_id(token_id)}: {result_70}")
+                logger.error(f"Failed to place reorder (70%) for token {shorten_id(asset_id)}: {result_70}")
 
         except Exception as e:
-            logger.error(f"Error during reorder for token {shorten_id(token_id)}: {e}", exc_info=True)
+            logger.error(f"Error during reorder for token {shorten_id(asset_id)}: {e}", exc_info=True)
 
-    async def subscribe_new_asset(self, token_id: str):
+    async def subscribe_new_asset(self, asset_id: str):
         """
         Optional: Implement dynamic subscription to a new asset.
         This method can be called when re-adding a token after cooldown.
         """
         try:
-            await self.ws_client.connection.send(json.dumps({
-                "asset_ids": [token_id],
-                "type": "Market",
-            }))
-            logger.info(f"Subscribed to new asset: {shorten_id(token_id)}")
+            subscription_payload = {
+                "asset_ids": [asset_id],  # Use 'asset_ids' with snake_case
+                "type": "Market"
+            }
+            await self.ws_client.connection.send(json.dumps(subscription_payload))
+            logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to new asset {shorten_id(token_id)}: {e}", exc_info=True)
+            logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)
 
     async def connect_websocket(self):
         if not self.ws_client:
             self.ws_client = ClobWebSocketClient(
                 ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
-                asset_ids=list(self.token_ids),
+                asset_ids=list(self.asset_ids),
                 message_handler=self.handle_message
             )
         try:
@@ -224,16 +229,16 @@ class RiskManagerWS:
 
     def check_cooldown_tokens(self):
         now = datetime.now(timezone.utc)
-        for token_id, cooldown_time in list(self.cooldown_tokens.items()):
+        for asset_id, cooldown_time in list(self.cooldown_tokens.items()):
             if cooldown_time <= now:
-                logger.info(f"Cooldown ended for token {shorten_id(token_id)}. Adding back to monitoring.")
-                self.token_ids.add(token_id)
-                del self.cooldown_tokens[token_id]
+                logger.info(f"Cooldown ended for token {shorten_id(asset_id)}. Adding back to monitoring.")
+                self.asset_ids.add(asset_id)
+                del self.cooldown_tokens[asset_id]
                 # Optionally, resubscribe to the token's events
                 if self.ws_client:
-                    self.ws_client.asset_ids.append(token_id)
+                    self.ws_client.asset_ids.append(asset_id)
                     asyncio.run_coroutine_threadsafe(
-                        self.subscribe_new_asset(token_id),
+                        self.subscribe_new_asset(asset_id),
                         asyncio.get_event_loop()
                     )
 
@@ -241,7 +246,7 @@ class RiskManagerWS:
         # Fetch open orders and get token IDs
         self.fetch_open_orders()
 
-        if not self.token_ids:
+        if not self.asset_ids:
             logger.warning("No token IDs found in open orders. Exiting RiskManagerWS.")
             return
 
