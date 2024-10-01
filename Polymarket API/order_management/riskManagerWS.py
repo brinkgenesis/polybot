@@ -1,17 +1,16 @@
 import logging
-import asyncio
 import threading
 from typing import Any, Dict, List
 from datetime import datetime, timedelta, timezone
 import time
-import ssl
-import certifi
 import os
 import json
 from clob_client.clob_websocket_client import ClobWebSocketClient
 from py_clob_client.client import ClobClient, OpenOrderParams
 from utils.utils import shorten_id
 from decimal import Decimal
+import math
+from threading import Lock, Event
 
 from order_management.limitOrder import build_order, execute_order  # Import existing order functions
 
@@ -41,119 +40,158 @@ class RiskManagerWS:
         self.cooldown_duration = timedelta(minutes=10)
         self.token_event_amounts: Dict[str, float] = {}
         self.token_event_timestamps: Dict[str, datetime] = {}
-        self.ws_client: ClobWebSocketClient = None  # Will be initialized after fetching asset IDs
+        self.ws_client: ClobWebSocketClient = None
+        self.lock = Lock()
+        self.ws_initialized = Event()
+        
+        # Initialize class-specific logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.hasHandlers():
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
 
-    def fetch_open_orders(self):
+    def handle_message(self, data: Dict[str, Any]):
         """
-        Fetch open orders and extract unique asset_ids.
-        """
-        try:
-            all_open_orders = []
-            for asset_id in self.asset_ids:
-                open_orders = self.client.get_orders(OpenOrderParams(asset_id=asset_id))
-                all_open_orders.extend(open_orders)
-            
-            # Update asset_ids based on fetched orders
-            self.asset_ids = {order['asset_id'] for order in all_open_orders}
-            logger.info(f"Fetched {len(self.asset_ids)} unique asset_ids from open orders.")
-        except Exception as e:
-            logger.error(f"Failed to fetch open orders: {e}", exc_info=True)
+        Handle incoming WebSocket messages.
 
-    async def handle_message(self, data: Dict[str, Any]):
+        Args:
+            data (Dict[str, Any]): The message data received from the WebSocket.
+        """
+        self.logger.debug(f"Received message: {data}")  # Log all incoming messages
+
         event_type = data.get('event_type')
+        if not event_type:
+            self.logger.warning("Received message without 'event_type'.")
+            return
+
+        self.logger.debug(f"Handling event type: {event_type}")
 
         if event_type == 'price_change':
-            await self.handle_price_change(data)
+            self.handle_price_change(data)
         elif event_type == 'book':
-            await self.handle_book_event(data)
+            self.handle_book_event(data)
+        elif event_type == 'error':  # Example: handle error messages from server
+            error_message = data.get('message', 'Unknown error')
+            self.logger.error(f"Received error from server: {error_message}")
         else:
-            logger.warning(f"Unhandled event type: {event_type}")
+            self.logger.warning(f"Unhandled event type: {event_type}")
 
-    async def handle_price_change(self, data: Dict[str, Any]):
-        asset_id = data.get('asset_id')
-        side = data.get('side')
-        price = float(data.get('price', 0))
-        size = float(data.get('size', 0))
-        timestamp_ms = int(data.get('timestamp', 0))
-        timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
-
-        amount = price * size
-
-        if side.lower() == 'sell' and asset_id in self.asset_ids:
-            logger.info(f"Received price_change for token {shorten_id(asset_id)}: Side={side}, Price={price}, Size={size}, Amount={amount}")
-
-            # Update the total amount and timestamps for the asset_id
-            if asset_id not in self.token_event_amounts:
-                self.token_event_amounts[asset_id] = amount
-                self.token_event_timestamps[asset_id] = timestamp
-            else:
-                time_diff = (timestamp - self.token_event_timestamps[asset_id]).total_seconds()
-                if time_diff <= 5:
-                    self.token_event_amounts[asset_id] += amount
-                else:
-                    self.token_event_amounts[asset_id] = amount
-                    self.token_event_timestamps[asset_id] = timestamp
-
-            # Check if amount exceeds $500 in a single transaction or within 5 seconds
-            if amount >= 500 or self.token_event_amounts[asset_id] >= 500:
-                logger.info(f"Threshold exceeded for token {shorten_id(asset_id)}. Cancelling orders.")
-                await self.cancel_and_reorder(asset_id)
-
-    async def handle_book_event(self, data: Dict[str, Any]):
+    def handle_price_change(self, data: Dict[str, Any]):
         """
-        Handle 'book' event messages.
-        Currently, this method can be extended based on requirements.
-        """
-        asset_id = data.get("asset_id")
-        market = data.get("market")
-        timestamp = data.get("timestamp")
-        buys = data.get("buys", [])
-        sells = data.get("sells", [])
-        hash_summary = data.get("hash")
-        
-        self.logger.info(f"Book Update for Market: {market} | Asset ID: {asset_id} | Timestamp: {timestamp}")
-        self.logger.debug(f"Buys: {buys}")
-        self.logger.debug(f"Sells: {sells}")
-        self.logger.debug(f"Hash: {hash_summary}")
-        # Implement further processing as needed
+        Handle 'price_change' event messages.
 
-    async def cancel_and_reorder(self, asset_id: str):
-        """
-        Cancel existing orders for the given asset_id and place new ones.
+        Args:
+            data (Dict[str, Any]): The message data received from the WebSocket.
         """
         try:
-            # Cancel all orders for this asset_id
-            open_orders = self.client.get_orders(OpenOrderParams(asset_id=asset_id))
-            orders_to_cancel = [order['id'] for order in open_orders if order['asset_id'] == asset_id]
-            if orders_to_cancel:
-                cancel_response = self.client.cancel_orders(orders_to_cancel)
-                logger.info(f"Cancelled orders for asset {shorten_id(asset_id)}: {orders_to_cancel}")
-            else:
-                logger.info(f"No orders to cancel for asset {shorten_id(asset_id)}.")
+            asset_id = data.get("asset_id")
+            new_price = float(data.get("new_price"))
+            timestamp = data.get("timestamp")
 
-            # Reorder
-            await self.reorder(asset_id)
+            self.logger.info(f"Price Change - Asset ID: {asset_id}, New Price: {new_price}, Timestamp: {timestamp}")
+            # Implement your business logic here, e.g., updating internal state, triggering orders, etc.
 
         except Exception as e:
-            logger.error(f"Failed during cancel and reorder for asset {shorten_id(asset_id)}: {e}", exc_info=True)
+            self.logger.error(f"Error handling price change event: {e}", exc_info=True)
 
+    def handle_book_event(self, data: Dict[str, Any]):
+        """
+        Handle 'book' event messages.
 
-    async def reorder(self, asset_id: str):
-        # Fetch market info
+        Args:
+            data (Dict[str, Any]): The message data received from the WebSocket.
+        """
         try:
-            market_info = self.client.get_market_info(asset_id)
+            asset_id = data.get("asset_id")
+            market = data.get("market")
+            timestamp = data.get("timestamp")
+            buys = data.get("buys", [])
+            sells = data.get("sells", [])
+            hash_summary = data.get("hash")
+
+            self.logger.info(f"Book Update for Market: {market} | Asset ID: {asset_id} | Timestamp: {timestamp}")
+            self.logger.debug(f"Buys: {buys}")
+            self.logger.debug(f"Sells: {sells}")
+            self.logger.debug(f"Hash: {hash_summary}")
+            # Implement further processing as needed
+
+        except Exception as e:
+            self.logger.error(f"Error handling book event: {e}", exc_info=True)
+
+    def fetch_open_orders(self):
+        try:
+            self.logger.info("Fetching open orders...")
+            # Replace with the actual synchronous API call
+            open_orders = self.client.get_orders()  # Ensure this is a synchronous method
+            self.logger.debug(f"Open orders fetched: {json.dumps(open_orders, indent=2)}")
+            
+            # Ensure open_orders is a list
+            if not isinstance(open_orders, list):
+                self.logger.error("Unexpected data format for open orders.")
+                self.asset_ids = set()
+                return
+
+            # Extract asset_ids
+            asset_ids = set()
+            for order in open_orders:
+                asset_id = order.get('asset_id')
+                if asset_id:
+                    asset_ids.add(asset_id)
+                else:
+                    self.logger.warning(f"Order without asset_id encountered: {order}")
+            
+            self.asset_ids = asset_ids
+            self.logger.info(f"Fetched {len(self.asset_ids)} unique asset_ids from open orders.")
+        except Exception as e:
+            self.logger.error(f"Error fetching open orders: {e}", exc_info=True)
+            self.asset_ids = set()
+
+        self.subscribe_assets_in_batches(batch_size=5)  # Adjust batch size as per API limits
+
+    def subscribe_assets_in_batches(self, batch_size: int = 5):
+        # Wait until WebSocket client is initialized
+        if not self.ws_initialized.wait(timeout=15):  # Wait up to 30 seconds
+            self.logger.error("WebSocket client initialization timed out. Cannot subscribe to assets.")
+            return
+
+        asset_ids = list(self.asset_ids)
+        total_assets = len(asset_ids)
+        batches = math.ceil(total_assets / batch_size)
+
+        self.logger.debug(f"Total assets: {total_assets}, Batch size: {batch_size}, Total batches: {batches}")
+
+        for i in range(batches):
+            batch = asset_ids[i*batch_size : (i+1)*batch_size]
+            self.logger.debug(f"Processing batch {i+1}/{batches}: {batch}")
+            try:
+                subscription_payload = {
+                    "asset_ids": batch,
+                    "type": "Market"
+                }
+                if self.ws_client and self.ws_client.ws and self.ws_client.ws.sock and self.ws_client.ws.sock.connected:
+                    self.ws_client.ws.send(json.dumps(subscription_payload))
+                    self.logger.info(f"Subscribed to assets batch {i+1}/{batches}: {batch}")
+                    time.sleep(1)  # Small delay between batches to avoid rate limits
+                else:
+                    self.logger.error("WebSocket client is not connected. Cannot subscribe.")
+            except Exception as e:
+                self.logger.error(f"Failed to subscribe to assets batch {i+1}/{batches}: {e}", exc_info=True)
+
+    def reorder(self, asset_id: str):
+        try:
+            # Fetch market info
+            market_info = self.client.get_market_info(asset_id)  # Ensure synchronous
             best_bid = float(market_info['best_bid'])
             best_ask = float(market_info['best_ask'])
             tick_size = float(market_info['tick_size'])
             max_incentive_spread = float(market_info['max_incentive_spread'])
 
-            logger.info(f"Market info for token {shorten_id(asset_id)}: Best Bid={best_bid}, Best Ask={best_ask}, Tick Size={tick_size}, Max Incentive Spread={max_incentive_spread}")
-        except Exception as e:
-            logger.error(f"Error fetching market info for token {shorten_id(asset_id)}: {e}", exc_info=True)
-            return
+            self.logger.info(f"Market info for token {shorten_id(asset_id)}: Best Bid={best_bid}, Best Ask={best_ask}, Tick Size={tick_size}, Max Incentive Spread={max_incentive_spread}")
 
-        # Build orders
-        try:
+            # Example reorder logic
             side = 'BUY'  # Adjust side as needed based on your strategy
             order_value = 500  # Total value to allocate
 
@@ -176,9 +214,9 @@ class RiskManagerWS:
             )
             success_30, result_30 = execute_order(self.client, signed_order_30)
             if success_30:
-                logger.info(f"Placed reorder (30%) for token {shorten_id(asset_id)} at price {maker_amount_30}")
+                self.logger.info(f"Placed reorder (30%) for token {shorten_id(asset_id)} at price {maker_amount_30}")
             else:
-                logger.error(f"Failed to place reorder (30%) for token {shorten_id(asset_id)}: {result_30}")
+                self.logger.error(f"Failed to place reorder (30%) for token {shorten_id(asset_id)}: {result_30}")
 
             # Build and execute 70% order
             signed_order_70 = build_order(
@@ -190,85 +228,96 @@ class RiskManagerWS:
             )
             success_70, result_70 = execute_order(self.client, signed_order_70)
             if success_70:
-                logger.info(f"Placed reorder (70%) for token {shorten_id(asset_id)} at price {maker_amount_70}")
+                self.logger.info(f"Placed reorder (70%) for token {shorten_id(asset_id)} at price {maker_amount_70}")
             else:
-                logger.error(f"Failed to place reorder (70%) for token {shorten_id(asset_id)}: {result_70}")
+                self.logger.error(f"Failed to place reorder (70%) for token {shorten_id(asset_id)}: {result_70}")
 
         except Exception as e:
-            logger.error(f"Error during reorder for token {shorten_id(asset_id)}: {e}", exc_info=True)
+            self.logger.error(f"Error during reorder for token {shorten_id(asset_id)}: {e}", exc_info=True)
 
-    async def subscribe_new_asset(self, asset_id: str):
-        """
-        Optional: Implement dynamic subscription to a new asset.
-        This method can be called when re-adding a token after cooldown.
-        """
+    def subscribe_new_asset(self, asset_id: str):
         try:
             subscription_payload = {
-                "asset_ids": [asset_id],  # Use 'asset_ids' with snake_case
+                "asset_ids": [asset_id],
                 "type": "Market"
             }
-            await self.ws_client.connection.send(json.dumps(subscription_payload))
-            logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
+            with self.lock:
+                if self.ws_client and self.ws_client.ws:
+                    self.ws_client.ws.send(json.dumps(subscription_payload))
+                    self.logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
+                else:
+                    self.logger.error("WebSocket client is not initialized. Cannot subscribe to new asset.")
         except Exception as e:
-            logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)
+            self.logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)
 
-    async def connect_websocket(self):
+    def connect_websocket(self):
         if not self.ws_client:
             self.ws_client = ClobWebSocketClient(
                 ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
                 asset_ids=list(self.asset_ids),
                 message_handler=self.handle_message
             )
-        try:
-            await self.ws_client.run_async()
-        except Exception as e:
-            logger.error(f"WebSocket client encountered an error: {e}", exc_info=True)
+            self.logger.info("Initialized ClobWebSocketClient.")
+            # Start WebSocket client in the same thread
+            try:
+                self.ws_client.run_sync()
+            except Exception as e:
+                self.logger.error(f"WebSocket client encountered an error: {e}", exc_info=True)
+        self.ws_initialized.set()  # Signal that WebSocket is initialized
 
-    async def monitor_trades(self):
-        await self.connect_websocket()
+    def monitor_trades(self):
+        self.connect_websocket()
 
     def check_cooldown_tokens(self):
         now = datetime.now(timezone.utc)
-        for asset_id, cooldown_time in list(self.cooldown_tokens.items()):
-            if cooldown_time <= now:
-                logger.info(f"Cooldown ended for token {shorten_id(asset_id)}. Adding back to monitoring.")
-                self.asset_ids.add(asset_id)
-                del self.cooldown_tokens[asset_id]
-                # Optionally, resubscribe to the token's events
-                if self.ws_client:
-                    self.ws_client.asset_ids.append(asset_id)
-                    asyncio.run_coroutine_threadsafe(
-                        self.subscribe_new_asset(asset_id),
-                        asyncio.get_event_loop()
-                    )
+        with self.lock:
+            for asset_id, cooldown_time in list(self.cooldown_tokens.items()):
+                if cooldown_time <= now:
+                    self.logger.info(f"Cooldown ended for token {shorten_id(asset_id)}. Adding back to monitoring.")
+                    self.asset_ids.add(asset_id)
+                    del self.cooldown_tokens[asset_id]
+                    if self.ws_client:
+                        self.ws_client.asset_ids.add(asset_id)
+                        self.subscribe_new_asset(asset_id)
 
     def run(self):
-        # Fetch open orders and get token IDs
         self.fetch_open_orders()
 
         if not self.asset_ids:
-            logger.warning("No token IDs found in open orders. Exiting RiskManagerWS.")
+            self.logger.warning("No token IDs found in open orders. Exiting RiskManagerWS.")
             return
 
-        # Start the websocket event loop in a separate thread
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=loop.run_until_complete, args=(self.monitor_trades(),), daemon=True)
-        thread.start()
+        # Start websocket client in a separate thread
+        websocket_thread = threading.Thread(target=self.monitor_trades, daemon=True)
+        websocket_thread.start()
 
-        # Periodically check cooldown tokens
+        # Start periodic cooldown checks in a separate thread
+        cooldown_thread = threading.Thread(target=self.periodic_cooldown_checks, daemon=True)
+        cooldown_thread.start()
+
+        # Keep the main thread alive to allow daemon threads to run
+        try:
+            while not self.ws_initialized.is_set():
+                self.logger.debug("Waiting for WebSocket to initialize...")
+                time.sleep(0.5)
+            self.logger.debug("WebSocket initialized. Proceeding with subscription.")
+            # Now that WebSocket is initialized, proceed with subscriptions
+            self.subscribe_assets_in_batches(batch_size=5)  # Adjust batch size as per API limits
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.logger.info("Shutting down RiskManagerWS...")
+            if self.ws_client:
+                self.ws_client.disconnect()
+            self.logger.info("RiskManagerWS shutdown complete.")
+
+    def periodic_cooldown_checks(self):
         try:
             while True:
                 self.check_cooldown_tokens()
-                # Sleep for a minute before checking again
                 time.sleep(60)
-        except KeyboardInterrupt:
-            logger.info("Shutting down RiskManagerWS...")
-            # Close websocket connection
-            loop.call_soon_threadsafe(loop.stop)
-            if self.ws_client and self.ws_client.connection:
-                loop.run_until_complete(self.ws_client.disconnect())
-            thread.join()
-            logger.info("RiskManagerWS shutdown complete.")
+        except Exception as e:
+            self.logger.error(f"Error in periodic cooldown checks: {e}", exc_info=True)
 
 def main():
     logging.basicConfig(level=logging.INFO)
@@ -287,7 +336,10 @@ def main():
     )
     client.set_api_creds(client.create_or_derive_api_creds())
     risk_manager = RiskManagerWS(client)
-    risk_manager.run()
+    try:
+        risk_manager.run()
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt. Exiting.")
 
 if __name__ == "__main__":
     main()
