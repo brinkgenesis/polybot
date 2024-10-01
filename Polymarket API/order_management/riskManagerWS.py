@@ -149,7 +149,7 @@ class RiskManagerWS:
             self.logger.error(f"Error fetching open orders: {e}", exc_info=True)
             self.asset_ids = set()
 
-        self.subscribe_assets_in_batches(batch_size=5)  # Adjust batch size as per API limits
+      
 
     def subscribe_assets_in_batches(self, batch_size: int = 5):
         # Wait until WebSocket client is initialized
@@ -180,7 +180,7 @@ class RiskManagerWS:
             except Exception as e:
                 self.logger.error(f"Failed to subscribe to assets batch {i+1}/{batches}: {e}", exc_info=True)
 
-    def reorder(self, asset_id: str):
+    """def reorder(self, asset_id: str):
         try:
             # Fetch market info
             market_info = self.client.get_market_info(asset_id)  # Ensure synchronous
@@ -234,10 +234,11 @@ class RiskManagerWS:
 
         except Exception as e:
             self.logger.error(f"Error during reorder for token {shorten_id(asset_id)}: {e}", exc_info=True)
-
+"""
     def subscribe_new_asset(self, asset_id: str):
         try:
             subscription_payload = {
+                "auth": None,
                 "asset_ids": [asset_id],
                 "type": "Market"
             }
@@ -254,7 +255,6 @@ class RiskManagerWS:
         if not self.ws_client:
             self.ws_client = ClobWebSocketClient(
                 ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
-                asset_ids=list(self.asset_ids),
                 message_handler=self.handle_message
             )
             self.logger.info("Initialized ClobWebSocketClient.")
@@ -304,7 +304,9 @@ class RiskManagerWS:
             # Now that WebSocket is initialized, proceed with subscriptions
             self.subscribe_assets_in_batches(batch_size=5)  # Adjust batch size as per API limits
             while True:
-                time.sleep(1)
+               #missing code here
+                time.sleep(1) #while true for messaging handling
+                self.handle_message()
         except KeyboardInterrupt:
             self.logger.info("Shutting down RiskManagerWS...")
             if self.ws_client:

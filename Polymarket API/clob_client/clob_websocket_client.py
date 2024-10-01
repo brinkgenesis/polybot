@@ -1,5 +1,4 @@
 import asyncio
-import websockets
 import json
 import logging
 import ssl
@@ -13,9 +12,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class ClobWebSocketClient:
-    def __init__(self, ws_url: str, asset_ids: List[str], message_handler: Callable[[Dict[str, Any]], Any], on_open_callback: Callable = None):
+    def __init__(self, ws_url: str, message_handler: Callable[[Dict[str, Any]], Any], on_open_callback: Callable = None):
         self.ws_url = ws_url  # WebSocket URL
-        self.asset_ids = asset_ids  # List of asset IDs to subscribe to
         self.message_handler = message_handler  # Callback for handling messages
         self.on_open_callback = on_open_callback
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -79,6 +77,38 @@ class ClobWebSocketClient:
             self.logger.info(f"Attempting to reconnect in {reconnect_delay} seconds...")
             time.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)  # Exponential backoff
+
+    def subscribe_assets_in_batches(self, asset_ids: List[str], subscription_type: str, batch_size: int = 5, delay: float = 1.0):
+        """
+        Subscribe to asset_ids in batches after establishing WebSocket connection.
+
+        Args:
+            asset_ids (List[str]): List of asset IDs to subscribe to.
+            subscription_type (str): Type of subscription (e.g., "Market").
+            batch_size (int, optional): Number of assets per batch. Defaults to 5.
+            delay (float, optional): Delay in seconds between batches to avoid rate limits. Defaults to 1.0.
+        """
+        if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+            self.logger.error("WebSocket is not connected. Cannot subscribe to assets.")
+            return
+
+        total_assets = len(asset_ids)
+        batches = [asset_ids[i:i + batch_size] for i in range(0, total_assets, batch_size)]
+        total_batches = len(batches)
+
+        self.logger.debug(f"Total assets to subscribe: {total_assets}. Total batches: {total_batches}.")
+
+        for idx, batch in enumerate(batches, start=1):
+            subscription_payload = {
+                "asset_ids": batch,
+                "type": subscription_type
+            }
+            try:
+                self.ws.send(json.dumps(subscription_payload))
+                self.logger.info(f"Subscribed to assets batch {idx}/{total_batches}: {batch}")
+            except Exception as e:
+                self.logger.error(f"Failed to subscribe to assets batch {idx}/{total_batches}: {e}", exc_info=True)
+            time.sleep(delay)  # Delay between batches to respect rate limits
 
     def disconnect(self):
         if self.ws:
