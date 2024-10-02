@@ -9,53 +9,43 @@ import threading
 import time
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)  # Set to DEBUG for detailed logs
 
 class ClobWebSocketClient:
     def __init__(self, ws_url: str, message_handler: Callable[[Dict[str, Any]], Any], on_open_callback: Callable = None):
         self.ws_url = ws_url  # WebSocket URL
         self.message_handler = message_handler  # Callback for handling messages
-        self.on_open_callback = on_open_callback
+        self.on_open_callback = on_open_callback  # Callback when connection opens
         self.logger = logging.getLogger(self.__class__.__name__)
         self.ws = None
-        self.keep_alive_thread = None
         self.stop_keep_alive = threading.Event()
 
+    def on_open(self, ws):
+        self.logger.info("WebSocket connection opened.")
+        if self.on_open_callback:
+            self.on_open_callback()
+        # Removed keep-alive ping thread
+
     def on_message(self, ws, message):
+        self.logger.debug(f"Received message: {message}")
         try:
+            message = message.strip()
+            if not message:
+                self.logger.debug("Received an empty message. Ignoring.")
+                return
             data = json.loads(message)
             self.message_handler(data)
-        except json.JSONDecodeError as e:
-            self.logger.error(f"JSON decode error: {e}", exc_info=True)
+        except json.JSONDecodeError:
+            self.logger.error(f"Received non-JSON message: {message}")
         except Exception as e:
-            self.logger.error(f"Error handling message: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error in on_message: {e}", exc_info=True)
 
     def on_error(self, ws, error):
         self.logger.error(f"WebSocket error: {error}", exc_info=True)
 
     def on_close(self, ws, close_status_code, close_msg):
-        self.logger.info("WebSocket connection closed.")
-
-    def on_open(self, ws):
-        self.logger.info("WebSocket connection opened.")
-        # Invoke the callback to signal that the WebSocket is initialized
-        if self.on_open_callback:
-            self.on_open_callback()
-        # Start the keep-alive thread
-        self.keep_alive_thread = threading.Thread(target=self.keep_alive, daemon=True)
-        self.keep_alive_thread.start()
-
-    def keep_alive(self):
-        while not self.stop_keep_alive.is_set():
-            try:
-                if self.ws:
-                    ping_payload = {"type": "ping"}
-                    self.ws.send(json.dumps(ping_payload))
-                    self.logger.debug("Sent keep-alive ping.")
-                time.sleep(30)  # Ping every 30 seconds
-            except Exception as e:
-                self.logger.error(f"Error sending keep-alive ping: {e}", exc_info=True)
-                break  # Exit the loop if unable to send pings
+        self.logger.info(f"WebSocket connection closed with code {close_status_code}, message: {close_msg}")
+        # No keep-alive to stop
 
     def run_sync(self):
         reconnect_delay = 1  # Start with 1 second
@@ -70,7 +60,9 @@ class ClobWebSocketClient:
                     on_error=self.on_error,
                     on_close=self.on_close
                 )
-                self.ws.run_forever()
+                self.ws.run_forever(
+                    sslopt={"cert_reqs": ssl.CERT_REQUIRED, "ca_certs": certifi.where()}
+                )
             except Exception as e:
                 self.logger.error(f"WebSocket encountered an exception: {e}", exc_info=True)
 
@@ -78,40 +70,7 @@ class ClobWebSocketClient:
             time.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)  # Exponential backoff
 
-    def subscribe_assets_in_batches(self, asset_ids: List[str], subscription_type: str, batch_size: int = 5, delay: float = 1.0):
-        """
-        Subscribe to asset_ids in batches after establishing WebSocket connection.
-
-        Args:
-            asset_ids (List[str]): List of asset IDs to subscribe to.
-            subscription_type (str): Type of subscription (e.g., "Market").
-            batch_size (int, optional): Number of assets per batch. Defaults to 5.
-            delay (float, optional): Delay in seconds between batches to avoid rate limits. Defaults to 1.0.
-        """
-        if not self.ws or not self.ws.sock or not self.ws.sock.connected:
-            self.logger.error("WebSocket is not connected. Cannot subscribe to assets.")
-            return
-
-        total_assets = len(asset_ids)
-        batches = [asset_ids[i:i + batch_size] for i in range(0, total_assets, batch_size)]
-        total_batches = len(batches)
-
-        self.logger.debug(f"Total assets to subscribe: {total_assets}. Total batches: {total_batches}.")
-
-        for idx, batch in enumerate(batches, start=1):
-            subscription_payload = {
-                "asset_ids": batch,
-                "type": subscription_type
-            }
-            try:
-                self.ws.send(json.dumps(subscription_payload))
-                self.logger.info(f"Subscribed to assets batch {idx}/{total_batches}: {batch}")
-            except Exception as e:
-                self.logger.error(f"Failed to subscribe to assets batch {idx}/{total_batches}: {e}", exc_info=True)
-            time.sleep(delay)  # Delay between batches to respect rate limits
-
     def disconnect(self):
         if self.ws:
-            self.stop_keep_alive.set()
             self.ws.close()
             self.logger.info("WebSocket client disconnected.")
