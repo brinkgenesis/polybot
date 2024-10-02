@@ -1,7 +1,7 @@
 import logging
 import threading
 from typing import Any, Dict, List
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import time
 import os
 import json
@@ -42,41 +42,6 @@ class RiskManagerWS:
         self.ws_initialized = threading.Event()
         self.assets_ids = set()
 
-    def handle_book_event(self, data: Dict[str, Any]):
-        """
-        Handle 'book' event messages.
-
-        Args:
-            data (Dict[str, Any]): The message data received from the WebSocket.
-        """
-        try:
-            asset_id = data.get("asset_id")
-            if not asset_id:
-                self.logger.warning("Received 'book' event without asset_id.")
-                return
-            # Further processing of the 'book' event
-            # ...
-        except Exception as e:
-            self.logger.error(f"Error handling 'book' event: {e}", exc_info=True)
-
-    def handle_price_change_event(self, data: Dict[str, Any]):
-        """
-        Handle 'price_change' event messages.
-
-        Args:
-            data (Dict[str, Any]): The message data received from the WebSocket.
-        """
-        try:
-            asset_id = data.get("asset_id")
-            price = data.get("price")
-            if not asset_id or price is None:
-                self.logger.warning("Received 'price_change' event with incomplete data.")
-                return
-            # Implement the logic to handle the price change
-            self.logger.info(f"Asset {asset_id} price changed to {price}")
-            # Further processing can be added here
-        except Exception as e:
-            self.logger.error(f"Error handling 'price_change' event: {e}", exc_info=True)
 
     def fetch_open_orders(self):
         try:
@@ -105,37 +70,18 @@ class RiskManagerWS:
             self.logger.error(f"Error fetching open orders: {e}", exc_info=True)
             self.assets_ids = set()
 
-    def subscribe_new_asset(self, asset_id: str):
-        try:
-            subscription_payload = {
-                "type": "subscribe",
-                "channel": "market",
-                "assets_ids": [asset_id]
-            }
-            with self.lock:
-                if self.ws_client and self.ws_client.ws:
-                    self.ws_client.ws.send(json.dumps(subscription_payload))
-                    self.logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
-                else:
-                    self.logger.error("WebSocket client is not initialized. Cannot subscribe to new asset.")
-        except Exception as e:
-            self.logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)
-
-    def message_handler(self, data: Dict[str, Any]):
+    def connect_websocket(self):  #this is good do not touch
         """
-        Handle incoming WebSocket messages.
+        Initialize and run the WebSocket client.
         """
-        self.logger.debug(f"Handling message: {data}")
-        try:
-            event_type = data.get("event_type")
-            if event_type == "book":
-                self.handle_book_event(data)
-            elif event_type == "price_change":
-                self.handle_price_change_event(data)
-            else:
-                self.logger.warning(f"Unhandled event_type: {event_type}")
-        except Exception as e:
-            self.logger.error(f"Error in message_handler: {e}", exc_info=True)
+        self.ws_client = ClobWebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            message_handler=self.message_handler,
+            on_open_callback=self.on_ws_open  # Set the event when connected
+        )
+        ws_thread = threading.Thread(target=self.ws_client.run_sync, daemon=True)
+        ws_thread.start()
+        self.logger.info("WebSocket client thread started.")
 
     def on_ws_open(self):
         """
@@ -144,10 +90,8 @@ class RiskManagerWS:
         self.logger.info("WebSocket connection established. Ready to subscribe.")
         self.ws_initialized.set()
 
-    def subscribe_all_assets(self):
-        """
-        Subscribe to all assets at once to avoid overwhelming the server with multiple requests.
-        """
+    def subscribe_all_assets(self): #this is good do not touch
+
         # Wait until WebSocket client is initialized
         if not self.ws_initialized.wait(timeout=15):  # Wait up to 15 seconds
             self.logger.error("WebSocket client initialization timed out. Cannot subscribe to assets.")
@@ -160,7 +104,7 @@ class RiskManagerWS:
 
         subscription_payload = {
             "type": "subscribe",
-            "channel": "market",
+            "channel": "Market",
             "assets_ids": assets_ids  # Pass the entire list
         }
 
@@ -181,18 +125,125 @@ class RiskManagerWS:
         except Exception as e:
             self.logger.error(f"Failed to subscribe to all assets: {e}", exc_info=True)
 
-    def connect_websocket(self):
+    def message_handler(self, data: Dict[str, Any]):
         """
-        Initialize and run the WebSocket client.
+        Handle incoming WebSocket messages.
         """
-        self.ws_client = ClobWebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
-            message_handler=self.message_handler,
-            on_open_callback=self.on_ws_open  # Set the event when connected
-        )
-        ws_thread = threading.Thread(target=self.ws_client.run_sync, daemon=True)
-        ws_thread.start()
-        self.logger.info("WebSocket client thread started.")
+        self.logger.debug(f"Handling message: {data}")
+        try:
+            event_type = data.get("event_type")
+            if event_type == "book":
+                self.handle_book_event(data)
+            elif event_type == "price_change":
+                self.handle_price_change_event(data)
+            else:
+                self.logger.warning(f"Unhandled event_type: {event_type}")
+        except Exception as e:
+            self.logger.error(f"Error in message_handler: {e}", exc_info=True)
+
+    def handle_book_event(self, data: Dict[str, Any]):
+
+        try:
+            # Debug: Log the entire event data for inspection
+            self.logger.debug(f"Received book event data: {json.dumps(data, indent=2)}")
+
+            asset_id = data.get("asset_id")
+            market = data.get("market", "N/A")
+            buys = data.get("buys", [])
+            sells = data.get("sells", [])
+            timestamp = data.get("timestamp", "N/A")
+            hash_value = data.get("hash", "N/A")
+
+            if not asset_id:
+                self.logger.warning("Received 'book' event without asset_id.")
+                return
+
+            # Validate that buys and sells are lists of dictionaries
+            if not isinstance(buys, list) or not all(isinstance(buy, dict) for buy in buys):
+                self.logger.error("Buys data is not in the expected format.")
+                buys = []
+
+            if not isinstance(sells, list) or not all(isinstance(sell, dict) for sell in sells):
+                self.logger.error("Sells data is not in the expected format.")
+                sells = []
+
+            # Debug: Log the actual buys and sells data
+            self.logger.debug(f"Buys data: {buys}")
+            self.logger.debug(f"Sells data: {sells}")
+
+            # Format up to the first three buy and sell orders
+            buys_formatted = ', '.join(
+                [f"{{price: {buy.get('price', 'N/A')}, size: {buy.get('size', 'N/A')}}}" for buy in buys[:3]]
+            )
+            sells_formatted = ', '.join(
+                [f"{{price: {sell.get('price', 'N/A')}, size: {sell.get('size', 'N/A')}}}" for sell in sells[:3]]
+            )
+
+            # Convert UNIX timestamp in milliseconds to human-readable format
+            try:
+                # Check if timestamp is in milliseconds
+                if len(timestamp) > 10:
+                    time_seconds = int(timestamp) / 1000
+                else:
+                    time_seconds = int(timestamp)
+                time_str = datetime.fromtimestamp(time_seconds).strftime('%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError) as e:
+                self.logger.warning(f"Invalid timestamp format: {timestamp} - {e}")
+                time_str = "Invalid Timestamp"
+
+            # Log the book event in a concise and readable format
+            self.logger.info(
+                f"Book Event - Asset ID: {shorten_id(asset_id)}, "
+                f"Market: {market}, "
+                f"Buys: [{buys_formatted}], "
+                f"Sells: [{sells_formatted}], "
+                f"Timestamp: {time_str}, "
+                f"Hash: {hash_value}"
+            )
+            # Further processing of the 'book' event
+            # ...
+        except Exception as e:
+            self.logger.error(f"Error handling 'book' event: {e}", exc_info=True)
+
+    def handle_price_change_event(self, data: Dict[str, Any]):
+
+        try:
+            asset_id = data.get("asset_id")
+            price = data.get("price")
+            size = data.get("size")
+            side = data.get("side")
+            timestamp = data.get("timestamp")
+            market=data.get("market")
+            amount= float(size)*float(price)
+            if not asset_id or price is None:
+                self.logger.warning("Received 'price_change' event with incomplete data.")
+                return
+            # Implement the logic to handle the price change
+            self.logger.info(f"{shorten_id(asset_id)} level changed: {price} at {size} size on {side} side for ${round(amount,2)}")
+            # Further processing can be added here
+        except Exception as e:
+            self.logger.error(f"Error handling 'price_change' event: {e}", exc_info=True)
+
+
+
+    """def subscribe_new_asset(self, asset_id: str):
+        try:
+            subscription_payload = {
+                "type": "subscribe",
+                "channel": "market",
+                "assets_ids": [asset_id]
+            }
+            with self.lock:
+                if self.ws_client and self.ws_client.ws:
+                    self.ws_client.ws.send(json.dumps(subscription_payload))
+                    self.logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
+                else:
+                    self.logger.error("WebSocket client is not initialized. Cannot subscribe to new asset.")
+        except Exception as e:
+            self.logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)"""
+
+
+
 
     def run(self):
         """
