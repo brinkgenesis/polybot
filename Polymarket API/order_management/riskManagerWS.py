@@ -104,7 +104,7 @@ class RiskManagerWS:
 
         subscription_payload = {
             "type": "subscribe",
-            "channel": "Market",
+            "channel": "market",
             "assets_ids": assets_ids  # Pass the entire list
         }
 
@@ -129,79 +129,72 @@ class RiskManagerWS:
         """
         Handle incoming WebSocket messages.
         """
-        self.logger.debug(f"Handling message: {data}")
+        self.logger.debug(f"Handling message:")
         try:
             event_type = data.get("event_type")
             if event_type == "book":
                 self.handle_book_event(data)
             elif event_type == "price_change":
                 self.handle_price_change_event(data)
+            elif event_type == "last_trade_price":
+                self.handle_last_trade_price_event(data)
             else:
                 self.logger.warning(f"Unhandled event_type: {event_type}")
         except Exception as e:
             self.logger.error(f"Error in message_handler: {e}", exc_info=True)
 
     def handle_book_event(self, data: Dict[str, Any]):
-
         try:
-            # Debug: Log the entire event data for inspection
-            self.logger.debug(f"Received book event data: {json.dumps(data, indent=2)}")
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
 
-            asset_id = data.get("asset_id")
-            market = data.get("market", "N/A")
-            buys = data.get("buys", [])
-            sells = data.get("sells", [])
-            timestamp = data.get("timestamp", "N/A")
-            hash_value = data.get("hash", "N/A")
+            # Sort asks in ascending order (lowest first) and take top 3
+            sorted_asks = sorted(asks, key=lambda x: float(x['price']))
+            top_asks = sorted_asks[:3]
 
-            if not asset_id:
-                self.logger.warning("Received 'book' event without asset_id.")
-                return
+            # Sort bids in descending order (highest first) and take top 3
+            sorted_bids = sorted(bids, key=lambda x: float(x['price']), reverse=True)
+            top_bids = sorted_bids[:3]
 
-            # Validate that buys and sells are lists of dictionaries
-            if not isinstance(buys, list) or not all(isinstance(buy, dict) for buy in buys):
-                self.logger.error("Buys data is not in the expected format.")
-                buys = []
+            output = "Asks:\n"
+            for ask in reversed(top_asks):
+                price = float(ask.get('price', '0'))
+                size = float(ask.get('size', '0'))
+                level = price * size
 
-            if not isinstance(sells, list) or not all(isinstance(sell, dict) for sell in sells):
-                self.logger.error("Sells data is not in the expected format.")
-                sells = []
+                # Remove leading zero if price < 1
+                price_str = f"{price:.2f}"[1:] if price < 1 else f"{price:.2f}"
 
-            # Debug: Log the actual buys and sells data
-            self.logger.debug(f"Buys data: {buys}")
-            self.logger.debug(f"Sells data: {sells}")
+                # Format size: no decimal if integer, else two decimals
+                size_str = f"{int(size)}" if size.is_integer() else f"{size:.2f}".rstrip('0').rstrip('.')
 
-            # Format up to the first three buy and sell orders
-            buys_formatted = ', '.join(
-                [f"{{price: {buy.get('price', 'N/A')}, size: {buy.get('size', 'N/A')}}}" for buy in buys[:3]]
-            )
-            sells_formatted = ', '.join(
-                [f"{{price: {sell.get('price', 'N/A')}, size: {sell.get('size', 'N/A')}}}" for sell in sells[:3]]
-            )
+                # Format level with two decimal places
+                level_str = f"{level:.2f}"
+                
 
-            # Convert UNIX timestamp in milliseconds to human-readable format
-            try:
-                # Check if timestamp is in milliseconds
-                if len(timestamp) > 10:
-                    time_seconds = int(timestamp) / 1000
-                else:
-                    time_seconds = int(timestamp)
-                time_str = datetime.fromtimestamp(time_seconds).strftime('%Y-%m-%d %H:%M:%S')
-            except (ValueError, TypeError) as e:
-                self.logger.warning(f"Invalid timestamp format: {timestamp} - {e}")
-                time_str = "Invalid Timestamp"
+                # Construct the formatted string with "Level:" label
+                output += f"   Price: {price_str}, Size: {size_str}, Level: {level_str}\n"
 
-            # Log the book event in a concise and readable format
-            self.logger.info(
-                f"Book Event - Asset ID: {shorten_id(asset_id)}, "
-                f"Market: {market}, "
-                f"Buys: [{buys_formatted}], "
-                f"Sells: [{sells_formatted}], "
-                f"Timestamp: {time_str}, "
-                f"Hash: {hash_value}"
-            )
-            # Further processing of the 'book' event
-            # ...
+            output += "\nBids:\n"
+            for bid in top_bids:
+                price = float(bid.get('price', '0'))
+                size = float(bid.get('size', '0'))
+                level = price * size
+
+                # Remove leading zero if price < 1
+                price_str = f"{price:.2f}"[1:] if price < 1 else f"{price:.2f}"
+
+                # Format size: no decimal if integer, else two decimals
+                size_str = f"{int(size)}" if size.is_integer() else f"{size:.2f}".rstrip('0').rstrip('.')
+
+                # Format level with two decimal places
+                level_str = f"{level:.2f}"
+
+                # Construct the formatted string with "Level:" label
+                output += f"   Price: {price_str}, Size: {size_str}, Level: {level_str}\n"
+
+            self.logger.info(output)
+
         except Exception as e:
             self.logger.error(f"Error handling 'book' event: {e}", exc_info=True)
 
@@ -212,8 +205,6 @@ class RiskManagerWS:
             price = data.get("price")
             size = data.get("size")
             side = data.get("side")
-            timestamp = data.get("timestamp")
-            market=data.get("market")
             amount= float(size)*float(price)
             if not asset_id or price is None:
                 self.logger.warning("Received 'price_change' event with incomplete data.")
@@ -224,26 +215,14 @@ class RiskManagerWS:
         except Exception as e:
             self.logger.error(f"Error handling 'price_change' event: {e}", exc_info=True)
 
-
-
-    """def subscribe_new_asset(self, asset_id: str):
+    def handle_last_trade_price_event(self, data: Dict[str, Any]):
         try:
-            subscription_payload = {
-                "type": "subscribe",
-                "channel": "market",
-                "assets_ids": [asset_id]
-            }
-            with self.lock:
-                if self.ws_client and self.ws_client.ws:
-                    self.ws_client.ws.send(json.dumps(subscription_payload))
-                    self.logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
-                else:
-                    self.logger.error("WebSocket client is not initialized. Cannot subscribe to new asset.")
+            asset_id = data.get("asset_id")
+            price = data.get("price")
+
+            self.logger.info(f"{shorten_id(asset_id)} last trade price: {price}")
         except Exception as e:
-            self.logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)"""
-
-
-
+            self.logger.error(f"Error handling 'last_trade_price' event: {e}", exc_info=True)
 
     def run(self):
         """
@@ -272,10 +251,7 @@ class RiskManagerWS:
         self.logger.info("RiskManagerWS shutdown complete.")
 
 def main():
-    logging.basicConfig(
-        level=logging.DEBUG,  # Set to DEBUG for detailed logs
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+
     creds = {
         'apiKey': API_KEY,
         'secret': API_SECRET,
