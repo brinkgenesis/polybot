@@ -104,7 +104,7 @@ class RiskManagerWS:
 
         subscription_payload = {
             "type": "subscribe",
-            "channel": "Market",
+            "channel": "market",
             "assets_ids": assets_ids  # Pass the entire list
         }
 
@@ -136,6 +136,8 @@ class RiskManagerWS:
                 self.handle_book_event(data)
             elif event_type == "price_change":
                 self.handle_price_change_event(data)
+            elif event_type == "last_trade_price":
+                self.handle_last_trade_price_event(data)
             else:
                 self.logger.warning(f"Unhandled event_type: {event_type}")
         except Exception as e:
@@ -149,37 +151,20 @@ class RiskManagerWS:
 
             asset_id = data.get("asset_id")
             market = data.get("market", "N/A")
-            buys = data.get("buys", [])
+            buys = data.get("buys",[])
             sells = data.get("sells", [])
             timestamp = data.get("timestamp", "N/A")
             hash_value = data.get("hash", "N/A")
 
-            if not asset_id:
-                self.logger.warning("Received 'book' event without asset_id.")
-                return
-
-            # Validate that buys and sells are lists of dictionaries
-            if not isinstance(buys, list) or not all(isinstance(buy, dict) for buy in buys):
-                self.logger.error("Buys data is not in the expected format.")
-                buys = []
-
-            if not isinstance(sells, list) or not all(isinstance(sell, dict) for sell in sells):
-                self.logger.error("Sells data is not in the expected format.")
-                sells = []
-
-            # Debug: Log the actual buys and sells data
+                        # Debug: Log the actual buys and sells data
             self.logger.debug(f"Buys data: {buys}")
             self.logger.debug(f"Sells data: {sells}")
 
-            # Format up to the first three buy and sell orders
-            buys_formatted = ', '.join(
-                [f"{{price: {buy.get('price', 'N/A')}, size: {buy.get('size', 'N/A')}}}" for buy in buys[:3]]
-            )
-            sells_formatted = ', '.join(
-                [f"{{price: {sell.get('price', 'N/A')}, size: {sell.get('size', 'N/A')}}}" for sell in sells[:3]]
-            )
+            # Limit to the first three buys and sells
+            buys_limited = buys[:3]
+            sells_limited = sells[:3]
 
-            # Convert UNIX timestamp in milliseconds to human-readable format
+            """ # Convert UNIX timestamp in milliseconds to human-readable format
             try:
                 # Check if timestamp is in milliseconds
                 if len(timestamp) > 10:
@@ -189,15 +174,15 @@ class RiskManagerWS:
                 time_str = datetime.fromtimestamp(time_seconds).strftime('%Y-%m-%d %H:%M:%S')
             except (ValueError, TypeError) as e:
                 self.logger.warning(f"Invalid timestamp format: {timestamp} - {e}")
-                time_str = "Invalid Timestamp"
+                time_str = "Invalid Timestamp"""
 
             # Log the book event in a concise and readable format
             self.logger.info(
                 f"Book Event - Asset ID: {shorten_id(asset_id)}, "
                 f"Market: {market}, "
-                f"Buys: [{buys_formatted}], "
-                f"Sells: [{sells_formatted}], "
-                f"Timestamp: {time_str}, "
+                f"Buys: {buys_limited}, "
+                f"Sells: {sells_limited}, "
+                f"Timestamp: {timestamp}, "
                 f"Hash: {hash_value}"
             )
             # Further processing of the 'book' event
@@ -224,26 +209,14 @@ class RiskManagerWS:
         except Exception as e:
             self.logger.error(f"Error handling 'price_change' event: {e}", exc_info=True)
 
-
-
-    """def subscribe_new_asset(self, asset_id: str):
+    def handle_last_trade_price_event(self, data: Dict[str, Any]):
         try:
-            subscription_payload = {
-                "type": "subscribe",
-                "channel": "market",
-                "assets_ids": [asset_id]
-            }
-            with self.lock:
-                if self.ws_client and self.ws_client.ws:
-                    self.ws_client.ws.send(json.dumps(subscription_payload))
-                    self.logger.info(f"Subscribed to new asset: {shorten_id(asset_id)}")
-                else:
-                    self.logger.error("WebSocket client is not initialized. Cannot subscribe to new asset.")
+            asset_id = data.get("asset_id")
+            price = data.get("price")
+
+            self.logger.info(f"{shorten_id(asset_id)} last trade price: {price}")
         except Exception as e:
-            self.logger.error(f"Failed to subscribe to new asset {shorten_id(asset_id)}: {e}", exc_info=True)"""
-
-
-
+            self.logger.error(f"Error handling 'last_trade_price' event: {e}", exc_info=True)
 
     def run(self):
         """
