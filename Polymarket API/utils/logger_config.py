@@ -3,7 +3,7 @@ import sys
 
 def setup_logger():
     # Configure root logger
-    logging.basicConfig(level=logging.INFO, format='%(message)s', force=True)
+    logging.basicConfig(level=logging.DEBUG, format='%(message)s', force=True)
 
     # Create a logger
     logger = logging.getLogger('main_logger')
@@ -23,7 +23,7 @@ def setup_logger():
     logger.propagate = False
 
     # Set the level for the logger
-    logger.setLevel(logging.WARNING)
+    logger.setLevel(logging.DEBUG)
 
     return logger
 
