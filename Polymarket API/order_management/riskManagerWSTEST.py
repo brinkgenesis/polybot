@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from order_management.riskManagerWS import RiskManagerWS
+from order_management.WS_Sub import RiskManagerWS
 from datetime import datetime
 
 class TestHandleBookEvent(unittest.TestCase):

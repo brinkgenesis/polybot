@@ -1,7 +1,7 @@
 import logging
 import threading
 from typing import Any, Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 import os
 import json
@@ -11,8 +11,10 @@ from utils.utils import shorten_id
 from decimal import Decimal
 import math
 from threading import Lock, Event
+#from ratelimiter import RateLimiter
 
 from order_management.limitOrder import build_order, execute_order  # Import existing order functions
+from order_management.localorderbook import LocalOrderBook  # Import LocalOrderBook
 
 # Load environment variables (assuming using python-dotenv)
 API_KEY = os.getenv("POLY_API_KEY")
@@ -22,6 +24,7 @@ POLYMARKET_HOST = os.getenv("POLYMARKET_HOST")
 CHAIN_ID = int(os.getenv("CHAIN_ID"))
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 POLYMARKET_PROXY_ADDRESS = os.getenv("POLYMARKET_PROXY_ADDRESS")
+WS_URL = os.getenv("WS_URL")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,7 +35,14 @@ if not logger.hasHandlers():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-class RiskManagerWS:
+# Define a Credentials class
+class Credentials:
+    def __init__(self, api_key: str, api_secret: str, api_passphrase: str):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.api_passphrase = api_passphrase
+
+class WS_Sub:
     def __init__(self, client: ClobClient):
         self.client = client
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -41,13 +51,20 @@ class RiskManagerWS:
         self.lock = threading.Lock()
         self.ws_initialized = threading.Event()
         self.assets_ids = set()
+        self.local_order_book = LocalOrderBook(snapshot_interval=600)  # 10 minutes
 
+        # Initialize Rate Limiter: 60 calls per 60 seconds
+        #self.api_rate_limiter = RateLimiter(max_calls=60, period=60)
 
     def fetch_open_orders(self):
         try:
             self.logger.info("Fetching open orders...")
+
+            # Rate-limited API call
+            #with self.api_rate_limiter:
             open_orders = self.client.get_orders()  # Ensure this is a synchronous method
-            self.logger.debug(f"Open orders fetched: {json.dumps(open_orders, indent=2)}")
+
+            self.logger.info(f"Fetched {len(open_orders)} open orders.")
 
             # Ensure open_orders is a list
             if not isinstance(open_orders, list):
@@ -56,16 +73,31 @@ class RiskManagerWS:
                 return
 
             # Extract asset_ids
-            assets_ids = set()
+            new_assets_ids = set()
             for order in open_orders:
                 asset_id = order.get('asset_id')
                 if asset_id and isinstance(asset_id, str):
-                    assets_ids.add(asset_id)
+                    new_assets_ids.add(asset_id)
                 else:
-                    self.logger.warning(f"Order without valid asset_id encountered: {order}")
+                    self.logger.warning(f"Order without valid asset_id encountered: {shorten_id(order.get('order_id', 'N/A'))}")
 
-            self.assets_ids = assets_ids  # Store assets_ids as an instance variable
-            self.logger.info(f"Fetched {len(self.assets_ids)} unique asset_ids from open orders.")
+            # Update assets_ids
+            previous_assets = self.assets_ids
+            self.assets_ids = new_assets_ids
+
+            # Manage LocalOrderBook assets
+            current_assets = set(self.local_order_book.order_books.keys())
+            new_assets = self.assets_ids - current_assets
+            removed_assets = current_assets - self.assets_ids
+
+            for asset in new_assets:
+                self.local_order_book.add_asset(asset)
+
+            for asset in removed_assets:
+                self.local_order_book.remove_asset(asset)
+
+            self.logger.info(f"Current assets tracked: {self.assets_ids}")
+
         except Exception as e:
             self.logger.error(f"Error fetching open orders: {e}", exc_info=True)
             self.assets_ids = set()
@@ -75,7 +107,7 @@ class RiskManagerWS:
         Initialize and run the WebSocket client.
         """
         self.ws_client = ClobWebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            ws_url=WS_URL,
             message_handler=self.message_handler,
             on_open_callback=self.on_ws_open  # Set the event when connected
         )
@@ -115,11 +147,11 @@ class RiskManagerWS:
                 and getattr(self.ws_client.ws, 'sock', None)
                 and self.ws_client.ws.sock.connected
             ):
-                # Log the payload being sent
-                self.logger.debug(f"Sending subscription payload: {subscription_payload}")
+                # Log minimal subscription payload
+                self.logger.info(f"Subscribing to {len(assets_ids)} assets.")
                 
                 self.ws_client.ws.send(json.dumps(subscription_payload))
-                self.logger.info(f"Subscribed to all assets: {assets_ids}")
+                self.logger.info(f"Subscribed to all assets.")
             else:
                 self.logger.error("WebSocket client is not connected. Cannot subscribe to assets.")
         except Exception as e:
@@ -129,13 +161,26 @@ class RiskManagerWS:
         """
         Handle incoming WebSocket messages.
         """
-        self.logger.debug(f"Handling message:")
+       
         try:
+                   
+            asset_id = data.get("asset_id")
             event_type = data.get("event_type")
             if event_type == "book":
-                self.handle_book_event(data)
+                #self.handle_book_event(data)
+                book_data = data.get("data")
+                if asset_id and book_data:
+                    self.local_order_book.process_book_event(asset_id, book_data)
             elif event_type == "price_change":
-                self.handle_price_change_event(data)
+                #self.handle_price_change_event(data)
+                update_data = {
+                    'price': data.get('price'),
+                    'size': data.get('size'),
+                    'side': data.get('side')
+                }
+                if asset_id:
+                    self.local_order_book.process_price_change_event(asset_id, update_data)
+
             elif event_type == "last_trade_price":
                 self.handle_last_trade_price_event(data)
             else:
@@ -226,7 +271,7 @@ class RiskManagerWS:
 
     def run(self):
         """
-        Run the RiskManagerWS by fetching orders, connecting WebSocket, and subscribing to assets.
+        Run the WS_Sub by fetching orders, connecting WebSocket, and subscribing to assets.
         """
         self.fetch_open_orders()
         self.connect_websocket()
@@ -244,19 +289,21 @@ class RiskManagerWS:
             self.shutdown()
 
     def shutdown(self):
-        self.logger.info("Shutting down RiskManagerWS...")
+        self.logger.info("Shutting down WS_Sub...")
         self.is_running = False
         if self.ws_client:
             self.ws_client.disconnect()
-        self.logger.info("RiskManagerWS shutdown complete.")
+        self.logger.info("WS_Sub shutdown complete.")
 
 def main():
 
-    creds = {
-        'apiKey': API_KEY,
-        'secret': API_SECRET,
-        'passphrase': API_PASSPHRASE,
-    }
+    # Instantiate credentials
+    creds = Credentials(
+        api_key=API_KEY,
+        api_secret=API_SECRET,
+        api_passphrase=API_PASSPHRASE
+    )
+
     client = ClobClient(
         host=POLYMARKET_HOST,
         chain_id=CHAIN_ID,
@@ -265,12 +312,18 @@ def main():
         signature_type=2,  # POLY_GNOSIS_SAFE
         funder=POLYMARKET_PROXY_ADDRESS
     )
-    client.set_api_creds(client.create_or_derive_api_creds())
-    risk_manager = RiskManagerWS(client)
+    client.set_api_creds(creds)
+    socket_sub = WS_Sub(client)
     try:
-        risk_manager.run()
+        socket_sub.run()
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Exiting.")
 
 if __name__ == "__main__":
     main()
+
+def list_tracked_assets(local_order_book: LocalOrderBook):
+    all_order_books = local_order_book.get_all_order_books()
+    print("Currently Tracked Assets:")
+    for asset_id in all_order_books.keys():
+        print(f" - {asset_id}")
