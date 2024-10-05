@@ -1,9 +1,12 @@
 import threading
 import time
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
+from utils.utils import shorten_id
+from threading import Lock, Event
+import json
 
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
@@ -33,18 +36,17 @@ class LocalOrderBook:
     """
     Manages local order books for multiple asset_ids.
     """
-    def __init__(self, snapshot_interval: int = 600):
+    def __init__(self, snapshot_interval: int = 60):
         """
         Initialize the LocalOrderBook.
 
         :param snapshot_interval: Interval in seconds to take order book snapshots.
         """
         self.logger = logging.getLogger(self.__class__.__name__)  # Initialize logger for the class
-        self.order_books: Dict[str, Dict[str, Dict[float, OrderLevel]]] = {}
-        self.lock = threading.Lock()
-        self.snapshot_interval = snapshot_interval  # e.g., 600 seconds for 10 minutes
-        self.last_snapshot_time = datetime.now(timezone.utc)
-        self.stop_event = threading.Event()
+        self.order_books = {}
+        self.lock = Lock()
+        self.stop_event = Event()
+        self.snapshot_interval = snapshot_interval  # Set to 60 seconds
         self.snapshot_thread = threading.Thread(target=self._snapshot_periodically, daemon=True)
         self.snapshot_thread.start()
         self.logger.info(f"LocalOrderBook initialized with snapshot interval of {self.snapshot_interval} seconds.")
@@ -126,13 +128,13 @@ class LocalOrderBook:
             with self.lock:
                 if asset_id not in self.order_books:
                     self.order_books[asset_id] = {'bids': {}, 'asks': {}}
-                    self.logger.info(f"Added new asset_id to LocalOrderBook during bid update: {asset_id}")
+                    self.logger.info(f"Added new asset_id to LocalOrderBook during bid update: {shorten_id(asset_id)}")
                 if price in self.order_books[asset_id]['bids']:
                     self.order_books[asset_id]['bids'][price].size = size
                 else:
                     # Add new bid level
                     self.order_books[asset_id]['bids'][price] = OrderLevel(price=price, size=size)
-            self.logger.info(f"Updated bid: {price} with size: {size} for asset: {asset_id}")
+            self.logger.info(f"Updated bid: {price} with size: {size} for asset: {shorten_id(asset_id)}")
 
     def update_ask(self, asset_id: str, update_data: Dict[str, Any]):
         price = float(update_data.get('price'))
@@ -141,26 +143,45 @@ class LocalOrderBook:
             with self.lock:
                 if asset_id not in self.order_books:
                     self.order_books[asset_id] = {'bids': {}, 'asks': {}}
-                    self.logger.info(f"Added new asset_id to LocalOrderBook during ask update: {asset_id}")
+                    self.logger.info(f"Added new asset_id to LocalOrderBook during ask update: {shorten_id(asset_id)}")
                 if price in self.order_books[asset_id]['asks']:
                     self.order_books[asset_id]['asks'][price].size = size
                 else:
                     # Add new ask level
                     self.order_books[asset_id]['asks'][price] = OrderLevel(price=price, size=size)
-            self.logger.info(f"Updated ask: {price} with size: {size} for asset: {asset_id}")
+            self.logger.info(f"Updated ask: {price} with size: {size} for asset: {shorten_id(asset_id)}")
 
     def _snapshot_periodically(self):
+        """
+        Periodically take snapshots of the order book based on the snapshot interval.
+        """
+        self.logger.debug("Snapshot periodic thread is running.")
         while not self.stop_event.is_set():
+            self.logger.debug("Waiting for next snapshot interval.")
             time.sleep(self.snapshot_interval)
+            self.logger.debug("Snapshot interval reached. Taking snapshot.")
             self.snapshot()
 
     def snapshot(self):
+        """
+        Take a snapshot of the current state of the LocalOrderBook.
+        """
         with self.lock:
-            # Implement snapshot logic, e.g., saving to disk or performing analytics
             self.logger.info("Taking snapshot of LocalOrderBook...")
-            # Example: serialize order_books to JSON
-            # with open('order_book_snapshot.json', 'w') as f:
-            #     json.dump(self.order_books, f, default=lambda o: o.__dict__)
+            for asset_id, books in self.order_books.items():
+                snapshot = self.get_order_book_snapshot(asset_id)
+                bids = sorted(snapshot['bids'].values(), key=lambda x: float(x['price']), reverse=True)
+                asks = sorted(snapshot['asks'].values(), key=lambda x: float(x['price']))
+                
+                # Format bids and asks
+                bids_formatted = ', '.join([f"{{price: {bid['price']}, size: {bid['size']}}}" for bid in bids[:3]])
+                asks_formatted = ', '.join([f"{{price: {ask['price']}, size: {ask['size']}}}" for ask in asks[:3]])
+                
+                self.logger.info(
+                    f"Snapshot - Asset ID: {shorten_id(asset_id)}, "
+                    f"Bids: [{bids_formatted}], "
+                    f"Asks: [{asks_formatted}]"
+                )
 
     def stop_snapshotting(self):
         self.stop_event.set()
@@ -177,4 +198,32 @@ class LocalOrderBook:
             else:
                 self.logger.warning(f"Asset ID {asset_id} not found in order books.")
                 return {}
+
+    def update_order_book(self, asset_id: str, bids: List[Dict[str, str]], asks: List[Dict[str, str]]):
+        with self.lock:
+            if asset_id not in self.order_books:
+                self.order_books[asset_id] = {'bids': {}, 'asks': {}}
+                
+            # Update Bids
+            for bid in bids:
+                price = bid.get('price')
+                size = bid.get('size')
+                if price and size:
+                    self.order_books[asset_id]['bids'][price] = {
+                        'price': price,
+                        'size': float(size)
+                    }
+
+            # Update Asks
+            for ask in asks:
+                price = ask.get('price')
+                size = ask.get('size')
+                if price and size:
+                    self.order_books[asset_id]['asks'][price] = {
+                        'price': price,
+                        'size': float(size)
+                    }
+
+            self.logger.debug(f"Order book updated for asset {shorten_id(asset_id)}")
+
 # Example usage (to be integrated with RiskManagerWS or main application)

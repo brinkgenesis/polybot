@@ -15,7 +15,6 @@ from threading import Lock, Event
 import sys
 
 from order_management.limitOrder import build_order, execute_order  # Import existing order functions
-from order_management.localorderbook import LocalOrderBook  # Import LocalOrderBook
 
 # Load environment variables (assuming using python-dotenv)
 
@@ -45,7 +44,6 @@ class WS_Sub:
         self.lock = threading.Lock()
         self.ws_initialized = threading.Event()
         self.assets_ids = set()
-        self.local_order_book = LocalOrderBook(snapshot_interval=600)  # 10 minutes
 
         # Initialize Rate Limiter: 60 calls per 60 seconds
         #self.api_rate_limiter = RateLimiter(max_calls=60, period=60)
@@ -155,10 +153,10 @@ class WS_Sub:
             asset_id = data.get("asset_id")  # Changed from 'asset_id' to 'asset_id'
             event_type = data.get("event_type")
             if event_type == "book":
-                #self.handle_book_event(data)
+                self.handle_book_event(data)
                 book_data = data.get("data")
                 if asset_id and book_data:
-                    self.local_order_book.process_book_event(asset_id, book_data)
+                   self.local_order_book.process_book_event(asset_id, book_data)
             elif event_type == "price_change":
                 #self.handle_price_change_event(data)
                 update_data = {
@@ -176,57 +174,50 @@ class WS_Sub:
             self.logger.error(f"Error in message_handler: {e}", exc_info=True)
 
     def handle_book_event(self, data: Dict[str, Any]):
+        """
+        Handle 'book' event messages.
+        """
         try:
+            asset_id = data.get("asset_id")
+            if not asset_id:
+                self.logger.warning("Received 'book' event without asset_id.")
+                return
+
             bids = data.get("bids", [])
             asks = data.get("asks", [])
+            timestamp = data.get("timestamp", "N/A")
+            hash_value = data.get("hash", "N/A")
 
-            # Sort asks in ascending order (lowest first) and take top 3
-            sorted_asks = sorted(asks, key=lambda x: float(x['price']))
-            top_asks = sorted_asks[:3]
+            if not bids:
+                self.logger.warning(f"No bids data received for asset {asset_id} in 'book' event.")
+            if not asks:
+                self.logger.warning(f"No asks data received for asset {asset_id} in 'book' event.")
 
-            # Sort bids in descending order (highest first) and take top 3
-            sorted_bids = sorted(bids, key=lambda x: float(x['price']), reverse=True)
-            top_bids = sorted_bids[:3]
+            # Process bids and asks directly
+            processed_bids = [
+                {"price": float(bid["price"]), "size": float(bid["size"])}
+                for bid in bids if "price" in bid and "size" in bid
+            ]
+            processed_asks = [
+                {"price": float(ask["price"]), "size": float(ask["size"])}
+                for ask in asks if "price" in ask and "size" in ask
+            ]
 
-            output = "Asks:\n"
-            for ask in reversed(top_asks):
-                price = float(ask.get('price', '0'))
-                size = float(ask.get('size', '0'))
-                level = price * size
+            # Log the book event
+            self.logger.info(
+                f"Book Event - Asset ID: {shorten_id(asset_id)}, "
+                f"Bids: [{', '.join([f'{{price: {bid['price']:.3f}, size: {bid['size']}}}' for bid in processed_bids[:3]])}], "
+                f"Asks: [{', '.join([f'{{price: {ask['price']:.3f}, size: {ask['size']}}}' for ask in processed_asks[:3]])}], "
+                f"Timestamp: {self._convert_timestamp(timestamp)}, "
+                f"Hash: {hash_value}"
+            )
 
-                # Remove leading zero if price < 1
-                price_str = f"{price:.2f}"[1:] if price < 1 else f"{price:.2f}"
-
-                # Format size: no decimal if integer, else two decimals
-                size_str = f"{int(size)}" if size.is_integer() else f"{size:.2f}".rstrip('0').rstrip('.')
-
-                # Format level with two decimal places
-                level_str = f"{level:.2f}"
-                
-
-                # Construct the formatted string with "Level:" label
-                output += f"   Price: {price_str}, Size: {size_str}, Level: {level_str}\n"
-
-            output += "\nBids:\n"
-            for bid in top_bids:
-                price = float(bid.get('price', '0'))
-                size = float(bid.get('size', '0'))
-                level = price * size
-
-                # Remove leading zero if price < 1
-                price_str = f"{price:.2f}"[1:] if price < 1 else f"{price:.2f}"
-
-                # Format size: no decimal if integer, else two decimals
-                size_str = f"{int(size)}" if size.is_integer() else f"{size:.2f}".rstrip('0').rstrip('.')
-
-                # Format level with two decimal places
-                level_str = f"{level:.2f}"
-
-                # Construct the formatted string with "Level:" label
-                output += f"   Price: {price_str}, Size: {size_str}, Level: {level_str}\n"
-
-            self.logger.info(output)
-
+            # Implement Best Bid Level Check
+            if processed_bids:
+                best_bid = max(processed_bids, key=lambda x: x["price"])
+                best_bid_amount = best_bid["price"] * best_bid["size"]
+                if best_bid_amount < 500:
+                    self.logger.warning(f"Best bid level below $500 for asset {shorten_id(asset_id)}: ${best_bid_amount:.2f}")
         except Exception as e:
             self.logger.error(f"Error handling 'book' event: {e}", exc_info=True)
 
@@ -242,7 +233,7 @@ class WS_Sub:
                 self.logger.warning("Received 'price_change' event with incomplete data.")
                 return
 
-            self.logger.info(f"{self.shorten_id(asset_id)} level changed: {price} at {size} size on {side} side for ${round(amount, 2)}")
+            self.logger.info(f"{shorten_id(asset_id)} level changed: {price} at {size} size on {side} side for ${round(amount, 2)}")
 
             # Update the local order book
             update_data = {
@@ -259,7 +250,7 @@ class WS_Sub:
             asset_id = data.get("asset_id")
             price = data.get("price")
             if asset_id and price:
-                self.logger.info(f"{self.shorten_id(asset_id)} last trade price: {price}")
+                self.logger.info(f"{shorten_id(asset_id)} last trade price: {price}")
         except Exception as e:
             self.logger.error(f"Error handling 'last_trade_price' event: {e}", exc_info=True)
 
