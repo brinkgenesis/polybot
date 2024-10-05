@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 from typing import Callable, Dict
 from gql import gql
-
+import sys
 from order_management.order_manager import (
     manage_orders,
     get_order_book_sync as get_order_book,

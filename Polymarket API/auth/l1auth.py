@@ -14,7 +14,16 @@ logger = logging.getLogger(__name__)
 CHAIN_ID = int(os.getenv("CHAIN_ID", 137))
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
-def create_l1_auth_headers(nonce=None):
+def create_l1_auth_headers(nonce: int = None) -> dict:
+    """
+    Creates L1 Authentication headers required for API requests that need L1 Authentication.
+
+    Parameters:
+    - nonce (int, optional): Nonce value. Defaults to None.
+
+    Returns:
+    - dict: A dictionary containing the necessary L1 authentication headers.
+    """
     if not PRIVATE_KEY:
         raise ValueError("PRIVATE_KEY must be set in the .env file")
 
@@ -32,6 +41,7 @@ def create_l1_auth_headers(nonce=None):
 
 if __name__ == "__main__":
     try:
+        # Example usage without specifying a nonce
         headers = create_l1_auth_headers()
         print("\nGenerated L1 Headers:")
         for key, value in headers.items():

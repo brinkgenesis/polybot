@@ -39,16 +39,4 @@ def create_l2_auth_headers(method: str, request_path: str, body=None):
     return headers
 
 if __name__ == "__main__":
-    try:
-        # Example usage
-        method = "GET"
-        request_path = "/api/v1/markets"
-        headers = create_l2_auth_headers(method, request_path)
-        print("\nGenerated L2 Headers:")
-        for key, value in headers.items():
-            if key in ["POLY_SIGNATURE", "POLY_PASSPHRASE"]:
-                print(f"{key}: {value[:10]}...{value[-10:]}")
-            else:
-                print(f"{key}: {value}")
-    except Exception as e:
-        logger.error(f"Error creating L2 authentication headers: {str(e)}")
+    pass

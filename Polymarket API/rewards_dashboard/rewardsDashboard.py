@@ -311,151 +311,34 @@ def print_pool_ownership_and_rewards(traders: List[Dict], order_book, v: float, 
 
 
 def main():
-    logger.debug("Starting rewardsDashboard.py script.")
+    logger.debug("Starting rewardsDashboard.main() function.")
     try:
-        # Initialize the ClobClient
-        client = ClobClient(
-            host=POLYMARKET_HOST,
-            chain_id=CHAIN_ID,
-            key=PRIVATE_KEY,
-            signature_type=2,  # POLY_GNOSIS_SAFE
-            funder=POLYMARKET_PROXY_ADDRESS
-        )
+        # Initialize the ClobClient (Already initialized above)
         client.set_api_creds(client.create_or_derive_api_creds())
+        logger.debug("ClobClient initialized successfully.")
 
         # Fetch open orders
         open_orders = get_open_orders(client)
+        logger.debug(f"Fetched {len(open_orders)} open orders.")
+
         if not open_orders:
             logger.warning("No open orders found.")
-            return
+            return {'status': 'no_data'}
 
-        # Extract unique token IDs from open orders
-        unique_token_ids = set(order['asset_id'] for order in open_orders)
-
-        # Define constants
-        daily_reward_pool = 50.0  # Example value; replace with actual
-        b = 1.0  # Replace with actual value
-        tick_size = 0.01  # Assuming a tick size; adjust as needed
-
-        # Create variables to store aggregate data
-        total_estimated_rewards = 0.0
-
-        # Create a list to store the results
         results = []
+        total_estimated_rewards = 0.0
+        daily_reward_pool = 25.0  # Example value; replace with actual value or configuration
+        b = 1.0  # Example parameter; replace as needed
+        tick_size = 0.01  # Example value; replace with actual tick size
+
+        # Process each token_id
+        unique_token_ids = set(order['asset_id'] for order in open_orders)
+        logger.debug(f"Unique token IDs to process: {unique_token_ids}")
 
         for token_id in unique_token_ids:
-            # Fetch order book
-            order_book = client.get_order_book(token_id)
-
-            if not order_book.bids and not order_book.asks:
-                logger.warning(f"No order book data for token_id {token_id}")
-                continue
-
-            # Calculate best bid, best ask, and midpoint
-            best_bid = max([float(bid.price) for bid in order_book.bids], default=0.0)
-            best_ask = min([float(ask.price) for ask in order_book.asks], default=1.0)
-            midpoint = round((best_bid + best_ask) / 2, 2)
-            logger.debug(f"Token ID: {token_id} - Best Bid: {best_bid}, Best Ask: {best_ask}, Midpoint: {midpoint}")
-
-            # Get trader's orders for this token
-            trader_orders = [order for order in open_orders if order['asset_id'] == token_id]
-            logger.debug(f"Trader Orders for token_id {token_id}: {trader_orders}")
-
-            if not trader_orders:
-                logger.warning(f"No trader orders for token_id {token_id}")
-                continue
-
-            # Prepare trader data
-            traders = [{'name': 'Trader', 'orders': trader_orders}]
-
-            # Calculate pool ownership
-            traders = calculate_pool_ownership(order_book, traders, b, best_bid, best_ask, tick_size)
-
-            # Calculate estimated rewards and APR
-            for trader in traders:
-                estimated_reward = estimate_daily_reward(trader, daily_reward_pool)
-
-                # Calculate total amount for this token
-                total_amount = sum(float(order['price']) * float(order['original_size']) for order in trader['orders'])
-
-                # Store the initial total amount for later use
-                trader['initial_total_amount'] = total_amount
-
-                total_estimated_rewards += estimated_reward
-
-                daily_apr, annual_apr = calculate_apr(estimated_reward, total_amount)
-
-                # Add the data to the results list
-                results.append({
-                    'Token ID': token_id,
-                    'Total Amount': total_amount,
-                    'Estimated Daily Reward': estimated_reward,
-                    'Pool Percentage': trader['pool_percentage'],
-                    'Daily APR': daily_apr,
-                    'Annual APR': annual_apr
-                })
-
-                # Log the data
-                logger.debug(f"Token ID: {token_id} - Total Amount: ${total_amount:.2f}, Estimated Daily Reward: ${estimated_reward:.2f}, "
-                             f"Pool Percentage: {trader['pool_percentage']}%, Daily APR: {daily_apr}, Annual APR: {annual_apr}")
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-
-    # After processing all tokens, sort and print the results in a table
-    if results:
-        # Sort results by Annual APR in descending order
-        sorted_results = sorted(results, key=lambda x: x['Annual APR'], reverse=True)
-
-        # Find the maximum of total amounts
-        max_total_amount = max(r['Total Amount'] for r in sorted_results)
-
-        # Format the sorted results for display
-        formatted_results = [{
-            'Token ID': shorten_id(str(r['Token ID'])),
-            'Total Amount': f"${r['Total Amount']:.2f}",
-            'Estimated Daily Reward': f"${r['Estimated Daily Reward']:.2f}",
-            'Pool Percentage': f"{r['Pool Percentage']:.6f}%",
-            'Daily APR': f"{r['Daily APR']:.6f}%",
-            'Annual APR': f"{r['Annual APR']:.2f}%"
-        } for r in sorted_results]
-
-        print("\nLiquidity Mining Rewards Dashboard")
-        print("----------------------------------")
-        print(tabulate(formatted_results, headers='keys', tablefmt="pretty"))
-
-        # Compute aggregate APR
-        if max_total_amount > 0:
-            total_daily_apr = (total_estimated_rewards / max_total_amount) * 100
-            total_annual_apr = total_daily_apr * 365
-            print(f"\nTotal Daily Rewards: ${total_estimated_rewards:.2f}")
-            print(f"\nMax Liquidity Provided: ${max_total_amount:.2f}")
-            print(f"Average Daily APR: {total_daily_apr:.2f}%")
-            print(f"Average Annual APR: {total_annual_apr:.2f}%")
-        else:
-            print("Maximum liquidity provided is zero, cannot compute aggregate APR.")
-    else:
-        print("No rewards data available.")
-
-    # **Simulator Functionality Starts Here**
-
-    # Prompt the user for max_total_amount
-    try:
-        user_input = input("\nEnter a max total amount to simulate (or press Enter to skip simulation): ")
-        if user_input.strip():
-            max_total_amount_sim = float(user_input)
-            if max_total_amount_sim <= 0:
-                print("Max total amount must be a positive number.")
-                return
-
-            # Recalculate metrics based on new total amount
-            simulated_results = []
-            total_sim_estimated_rewards = 0.0
-
-            for token_data in results:
-                token_id = token_data['Token ID']
-                
-                # Fetch order book again (or use cached version if available)
+            try:
                 order_book = client.get_order_book(token_id)
+                logger.debug(f"Processing token_id: {token_id}")
 
                 if not order_book.bids and not order_book.asks:
                     logger.warning(f"No order book data for token_id {token_id}")
@@ -464,73 +347,135 @@ def main():
                 # Calculate best bid, best ask, and midpoint
                 best_bid = max([float(bid.price) for bid in order_book.bids], default=0.0)
                 best_ask = min([float(ask.price) for ask in order_book.asks], default=1.0)
+                midpoint = round((best_bid + best_ask) / 2, 2)
+                logger.debug(f"Token ID: {token_id} - Best Bid: {best_bid}, Best Ask: {best_ask}, Midpoint: {midpoint}")
 
                 # Get trader's orders for this token
                 trader_orders = [order for order in open_orders if order['asset_id'] == token_id]
+                logger.debug(f"Number of trader orders for token_id {token_id}: {len(trader_orders)}")
 
-                # Scale up the orders to the new total amount
-                scale_factor = max_total_amount_sim / token_data['Total Amount']
-                scaled_orders = []
-                for order in trader_orders:
-                    scaled_order = order.copy()
-                    scaled_order['original_size'] = str(float(order['original_size']) * scale_factor)
-                    scaled_orders.append(scaled_order)
+                if not trader_orders:
+                    logger.warning(f"No trader orders for token_id {token_id}")
+                    continue
 
-                # Prepare trader data
-                traders = [{'name': 'Trader', 'orders': scaled_orders}]
+                # Prepare trader data with correct 'name' key
+                traders = [{'name': 'Trader', 'orders': trader_orders}]
 
                 # Calculate pool ownership
                 traders = calculate_pool_ownership(order_book, traders, b, best_bid, best_ask, tick_size)
+                logger.debug(f"Calculated pool ownership for token_id {token_id}")
+
+                # **New Code Starts Here**
+                # Determine the first 3 bid levels closest to the midpoint
+                bids_sorted = sorted(order_book.bids, key=lambda x: float(x.price), reverse=True)
+                bid_levels = sorted(
+                    set(float(bid.price) for bid in bids_sorted if float(bid.price) <= midpoint),
+                    reverse=True
+                )[:3]
+
+                # Determine the first 3 ask levels closest to the midpoint
+                asks_sorted = sorted(order_book.asks, key=lambda x: float(x.price))
+                ask_levels = sorted(
+                    set(float(ask.price) for ask in asks_sorted if float(ask.price) >= midpoint)
+                )[:3]
+
+                logger.debug(f"Selected Bid Levels: {bid_levels}")
+                logger.debug(f"Selected Ask Levels: {ask_levels}")
+                # **New Code Ends Here**
+
+                # Initialize total_bid_amount and total_ask_amount for each trader
+                for trader in traders:
+                    total_bid_amount = sum(
+                        float(order['price']) * float(order['original_size'])
+                        for order in trader['orders']
+                        if order['side'].lower() == 'buy' and float(order['price']) in bid_levels
+                    )
+                    total_ask_amount = sum(
+                        float(order['price']) * float(order['original_size'])
+                        for order in trader['orders']
+                        if order['side'].lower() == 'sell' and float(order['price']) in ask_levels
+                    )
+                    trader['total_bid_amount'] = total_bid_amount
+                    trader['total_ask_amount'] = total_ask_amount
+                    logger.debug(f"Trader {trader['name']} - Total Bid Amount: {total_bid_amount}, Total Ask Amount: {total_ask_amount}")
 
                 # Calculate estimated rewards and APR
                 for trader in traders:
                     estimated_reward = estimate_daily_reward(trader, daily_reward_pool)
-                    total_sim_estimated_rewards += estimated_reward
+                    trader['Estimated Daily Reward'] = f"${estimated_reward:.2f}"
+                    total_amount = trader['total_bid_amount'] + trader['total_ask_amount']  # Now safe
+                    trader['Total Amount'] = f"${total_amount:.2f}"
+                    daily_apr, annual_apr = calculate_apr(estimated_reward, total_amount)
+                    trader['Daily APR'] = f"{daily_apr:.2f}%"
+                    trader['Annual APR'] = f"{annual_apr:.2f}%"
+                    total_estimated_rewards += estimated_reward
 
-                    daily_apr, annual_apr = calculate_apr(estimated_reward, max_total_amount_sim)
+                    # Format amounts and percentages for display
+                    trader['Pool Percentage'] = f"{trader['pool_percentage']:.6f}%"
 
-                    simulated_results.append({
-                        'Token ID': token_id,
-                        'Total Amount': max_total_amount_sim,
-                        'Estimated Daily Reward': estimated_reward,
-                        'Pool Percentage': trader['pool_percentage'],
-                        'Daily APR': daily_apr,
-                        'Annual APR': annual_apr
-                    })
+                # Append traders to results
+                results.extend(traders)
 
-            # Sort simulated results by Annual APR
-            simulated_results = sorted(simulated_results, key=lambda x: x['Annual APR'], reverse=True)
+            except Exception as e:
+                logger.error(f"An error occurred while processing token_id {token_id}: {e}", exc_info=True)
 
-            # Format the simulated results for display
-            formatted_sim_results = [{
-                'Token ID': shorten_id(str(r['Token ID'])),
-                'Total Amount': f"${r['Total Amount']:.2f}",
-                'Estimated Daily Reward': f"${r['Estimated Daily Reward']:.2f}",
-                'Pool Percentage': f"{r['Pool Percentage']:.6f}%",
-                'Daily APR': f"{r['Daily APR']:.6f}%",
-                'Annual APR': f"{r['Annual APR']:.2f}%"
-            } for r in simulated_results]
+        if results:
+            # Sort results by Annual APR in descending order
+            sorted_results = sorted(
+                results,
+                key=lambda x: float(x['Annual APR'].strip('%')),
+                reverse=True
+            )
+            logger.debug("Sorted results based on Annual APR.")
 
-            # Print simulated table
-            print("\nSimulated Liquidity Mining Rewards Dashboard")
-            print("--------------------------------------------")
-            print(tabulate(formatted_sim_results, headers='keys', tablefmt="pretty"))
+            # Find the maximum of total amounts
+            max_total_amount = max(
+                float(r['Total Amount'].strip('$')) for r in sorted_results
+            )
+            logger.debug(f"Max total amount: {max_total_amount}")
 
-            # Compute aggregate APR for simulated data
-            if max_total_amount_sim > 0:
-                total_daily_apr = (total_sim_estimated_rewards / max_total_amount_sim) * 100
-                total_annual_apr = total_daily_apr * 365
-                print(f"\nTotal Simulated Daily Rewards: ${total_sim_estimated_rewards:.2f}")
-                print(f"\nSimulated Liquidity Provided: ${max_total_amount_sim:.2f}")
-                print(f"Simulated Average Daily APR: {total_daily_apr:.2f}%")
-                print(f"Simulated Average Annual APR: {total_annual_apr:.2f}%")
-            else:
-                print("Max total amount is zero, cannot compute simulated aggregate APR.")
+            # Format the sorted results for display
+            formatted_results = [{
+                'Name': r['name'],  # Use 'name' key here
+                'Pool Percentage': r['Pool Percentage'],
+                'Total Amount': r['Total Amount'],
+                'Estimated Daily Reward': r['Estimated Daily Reward'],
+                'Daily APR': r['Daily APR'],
+                'Annual APR': r['Annual APR']
+            } for r in sorted_results]
 
-    except ValueError:
-        print("Invalid input. Please enter a numerical value for the max total amount.")
+            aggregate_apr = {
+                'Total Daily Rewards': f"${total_estimated_rewards:.2f}",
+                'Max Liquidity Provided': f"${max_total_amount:.2f}",
+                'Average Daily APR': f"{(sum(float(r['Daily APR'].strip('%')) for r in sorted_results) / len(sorted_results)):.2f}%" if sorted_results else "N/A",
+                'Average Annual APR': f"{(sum(float(r['Annual APR'].strip('%')) for r in sorted_results) / len(sorted_results)):.2f}%" if sorted_results else "N/A"
+            }
+
+            logger.debug(f"Formatted Results: {formatted_results}")
+            logger.debug(f"Aggregate APR: {aggregate_apr}")
+
+            return {
+                'status': 'success',
+                'data': {
+                    'Traders': formatted_results,
+                    'aggregate_apr': aggregate_apr
+                }
+            }
+        else:
+            logger.warning("No rewards data available after processing.")
+            return {'status': 'no_data'}
+
+    except Exception as e:
+        logger.error(f"An error occurred in rewardsDashboard.main(): {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}
+
+
+def run_rewardsDash():
+    """
+    Encapsulates the existing main() function and returns its outputs.
+    """
+    # Call the main() function and return the result
+    return main()
 
 if __name__ == "__main__":
     main()
-
-

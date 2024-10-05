@@ -14,6 +14,8 @@ from decimal import Decimal
 from utils.logger_config import main_logger as logger
 from utils.utils import shorten_id
 from typing import List, Dict, Any
+import threading
+import json
 
 # Add the parent directory of order_management to Python's module search path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -556,8 +558,59 @@ def main_loop():
             logger.info("Sleeping for 10 seconds before retry...")
             time.sleep(7)
 
+def load_config():
+    with open('config.json', 'r') as file:
+        config = json.load(file)
+    return config
+
+class BotManager:
+    def __init__(self):
+        self.shutdown_flag = threading.Event()
+        self.client = None
+
+    def initialize_client(self):
+        # Initialize the ClobClient
+        try:
+            self.client = ClobClient(
+                host=os.getenv("POLYMARKET_HOST"),
+                chain_id=int(os.getenv("CHAIN_ID")),
+                key=os.getenv("PRIVATE_KEY"),
+                signature_type=2,  # POLY_GNOSIS_SAFE
+                funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
+            )
+            self.client.set_api_creds(self.client.create_or_derive_api_creds())
+            logger.info("ClobClient initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ClobClient: {e}", exc_info=True)
+            sys.exit(1)
+
+    def run(self):
+        logger.info("Bot is starting...")
+        self.initialize_client()
+        while not self.shutdown_flag.is_set():
+            try:
+                # Call your main bot logic here
+                self.main_loop()
+                # Sleep or wait for a certain interval before next iteration
+                time.sleep(7)  # Adjust as needed
+            except Exception as e:
+                logger.error(f"Error in bot execution: {e}", exc_info=True)
+                time.sleep(7)
+        logger.info("Bot has been stopped.")
+
+    def main_loop(self):
+        # Your main bot loop logic here
+        # For example:
+        main(self.client)
+
+    def stop(self):
+        self.shutdown_flag.set()
+        logger.info("Shutdown flag set. Bot will stop after the current iteration.")
+
+# If you have code that should run when executing this script directly,
+# you can protect it with `if __name__ == "__main__":`
 if __name__ == "__main__":
     limitOrder_logger.parent = logger
     __all__ = ['manage_orders', 'get_order_book_sync', 'get_market_info_sync']
-    main_loop()
-
+    bot_manager = BotManager()
+    bot_manager.run()
