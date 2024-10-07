@@ -13,7 +13,6 @@ from py_clob_client.clob_types import ApiCreds, BookParams
 from order_management.WS_Sub import WS_Sub
 from order_management.limitOrder import build_order, execute_order
 from order_management.autoSell import auto_sell_filled_orders
-from order_management.order_manager import manage_orders  # Ensure this is correctly imported
 from shared.are_orders_scoring import run_order_scoring
 
 class WSOrderManager:
@@ -29,10 +28,20 @@ class WSOrderManager:
         self.subscribed_assets_ids: Set[str] = set()  # Keep track of subscribed assets
 
         # Initialize WS_Sub instance, passing the shared lock and event callback
-        self.ws_subscriber = WS_Sub(event_callback=self.handle_event)
+        self.ws_subscriber = WS_Sub(
+            memory_lock=self.memory_lock,
+            event_callback=self.handle_event,
+            on_connected=self.on_ws_connected
+        )
+
         self.ws_subscriber_thread = threading.Thread(target=self.ws_subscriber.run, daemon=True)
         self.ws_subscriber_thread.start()
         self.logger.info("WS_Sub thread started.")
+        
+
+         # Initialize scoring thread
+        self.scoring_thread = threading.Thread(target=self.check_order_scoring_loop, daemon=True)
+        self.scoring_thread.start()
 
     def run(self):
         self.logger.info("Starting WSOrderManager...")
@@ -138,6 +147,13 @@ class WSOrderManager:
         except Exception as e:
             self.logger.error(f"Error processing order book for asset_id {order_book.token_id}: {e}", exc_info=True)
 
+    def on_ws_connected(self):
+        """
+        Callback invoked when the WebSocket connection is established.
+        """
+        self.logger.info("WebSocket connected successfully.")
+
+
     def subscribe_to_assets(self):
         self.logger.info("Subscribing to assets via WS_Sub...")
         try:
@@ -212,10 +228,6 @@ class WSOrderManager:
             REWARD_RANGE = 3 * TICK_SIZE  # 0.03
             MAX_INCENTIVE_SPREAD = 0.02  # 0.02
 
-            # Run order scoring
-            order_ids = [order['id'] for order in relevant_orders]
-            self.logger.info(f"Checking scoring for order IDs: {[shorten_id(order_id) for order_id in order_ids]}")
-            scoring_results = run_order_scoring(self.client, order_ids)  
 
             for order in relevant_orders:
                 order_id = order['id']
@@ -227,41 +239,27 @@ class WSOrderManager:
                     "too far from best bid": (best_bid_event - order_price) > MAX_INCENTIVE_SPREAD,
                     "at the best bid": order_price == best_bid_event,
                     "best bid value is less than $500": (best_bid_event * best_bid_size) < 500,
-                    "order is not scoring": not scoring_results.get(order_id, False)
                 }
 
                 cancel_reasons = [reason for reason, condition in cancel_conditions.items() if condition]
                 should_cancel = len(cancel_reasons) > 0
 
                 for reason in cancel_reasons:
-                    self.logger.info(f"{reason.capitalize()}: {cancel_conditions[reason]}")
-
+                     self.logger.info(f"{reason.capitalize()}: {cancel_conditions[reason]}")
+ 
                 if should_cancel:
-                    self.log_cancellation(order_id, cancel_reasons)
-                    orders_to_cancel.append(order_id)
+                     self.log_cancellation(order_id, cancel_reasons)
+                     orders_to_cancel.append(order_id)
                 else:
-                    self.logger.info(f"Order {shorten_id(order_id)} does not meet any cancellation criteria")
-
-            # Cancel all orders that meet the conditions
+                     self.logger.info(f"Order {shorten_id(order_id)} does not meet any cancellation criteria")
+                     
             if orders_to_cancel:
-                try:
-                    self.logger.info(f"Attempting to cancel orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
-                    self.client.cancel_orders(orders_to_cancel)
-                    self.logger.info(f"Successfully cancelled orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
-
-                    # Update local_order_memory by removing canceled orders
-                    with self.memory_lock:
-                        for order_id in orders_to_cancel:
-                            if order_id in self.local_order_memory:
-                                del self.local_order_memory[order_id]
-
-                except Exception as e:
-                    self.logger.error(f"Failed to cancel orders: {str(e)}")
+                 self.cancel_orders(orders_to_cancel)
             else:
-                self.logger.info("No orders to cancel")
-
+                 self.logger.info("No orders to cancel")
+ 
         except Exception as e:
-            self.logger.error(f"Error managing orders for asset_id {shorten_id(asset_id)}: {str(e)}", exc_info=True)
+             self.logger.error(f"Error managing orders for asset_id {shorten_id(asset_id)}: {str(e)}", exc_info=True)
 
     def log_cancellation(self, order_id: str, reasons: List[str]):
         shortened_id = shorten_id(order_id)
@@ -269,16 +267,72 @@ class WSOrderManager:
         self.logger.info(f"Marking order {shortened_id} for cancellation: {reasons_formatted}")
 
     def shutdown(self):
-        self.logger.info("Shutting down WSOrderManager...")
+        self.logger.info("Shutting down Order Manager...")
         self.is_running = False
         self.ws_subscriber.shutdown()  # Ensure WS_Sub has a shutdown method
         self.ws_subscriber_thread.join()
-        self.logger.info("WSOrderManager shut down successfully.")
+        self.scoring_thread.join()
+        self.logger.info("Order Manager shut down successfully.")
+
+    def check_order_scoring_loop(self):
+        """
+        Periodically checks the scoring of all active orders and cancels those that are not scoring.
+        Runs every 5 seconds.
+        """
+        self.logger.info("Starting order scoring thread...")
+        while self.is_running:
+            try:
+                with self.memory_lock:
+                    order_ids = list(self.local_order_memory.keys())
+        
+                if order_ids:
+                    self.logger.info(f"Checking scoring for all orders: {[shorten_id(oid) for oid in order_ids]}")
+                    scoring_results = run_order_scoring(self.client, order_ids)
+        
+                    orders_to_cancel = []
+                    for order_id in order_ids:
+                        is_scoring = scoring_results.get(order_id, False)
+                        if not is_scoring:
+                            orders_to_cancel.append(order_id)
+                            self.logger.info(f"Order {shorten_id(order_id)} is not scoring and will be canceled.")
+        
+                    if orders_to_cancel:
+                        self.cancel_orders(orders_to_cancel)
+                        self.logger.info(f"Canceled orders: {orders_to_cancel}")
+                         # Update local_order_memory by removing canceled orders
+
+                else:
+                    self.logger.info("No active orders to check scoring.")
+        
+                time.sleep(10)  # Wait for 5 seconds before next check
+        
+            except Exception as e:
+                self.logger.error(f"Error in scoring thread: {e}", exc_info=True)
+                time.sleep(10)
+
+    def cancel_orders(self, orders_to_cancel: List[str]):
+        """
+        Cancels the specified orders.
+        """
+        try:
+            self.logger.info(f"Attempting to cancel orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+            self.client.cancel_orders(orders_to_cancel)
+            self.logger.info(f"Successfully cancelled orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+ 
+            # Update local_order_memory by removing canceled orders
+            with self.memory_lock:
+                for order_id in orders_to_cancel:
+                    if order_id in self.local_order_memory:
+                        del self.local_order_memory[order_id]
+                        self.logger.info(f"Removed order from memory: {shorten_id(order_id)}")
+ 
+        except Exception as e:
+            self.logger.error(f"Failed to cancel orders: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s %(name)s %(levelname)s: %(message)s'
+        format='%(message)s'
     )
 
     # Initialize client
@@ -311,4 +365,4 @@ if __name__ == "__main__":
         ws_order_manager.run()
     except KeyboardInterrupt:
         ws_order_manager.shutdown()
-        logging.info("WSOrderManager stopped by user.")
+        logging.info("Order Manager stopped by user.")
