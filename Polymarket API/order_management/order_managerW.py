@@ -16,7 +16,6 @@ from utils.utils import shorten_id
 from typing import List, Dict, Any
 import threading
 import json
-from order_management.WS_Sub import WS_Sub
 
 # Add the parent directory of order_management to Python's module search path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -136,6 +135,109 @@ def get_market_info(client: ClobClient, token_id: str):
             'max_incentive_spread': None,
          
         }
+
+def manage_orders(client: ClobClient, open_orders: List[Dict], token_id: str, market_info: Dict, order_book: OrderBookSummary) -> List[str]:
+    orders_to_cancel = []
+    
+    midpoint = (market_info['best_bid'] + market_info['best_ask']) / 2
+    reward_range = 3 * market_info['tick_size']
+
+    # Get all order IDs for the current token
+    order_ids = [order['id'] for order in open_orders if order['asset_id'] == token_id]
+
+    # Check scoring for all orders at once
+    logger.info(f"Checking scoring for order IDs: {[shorten_id(order_id) for order_id in order_ids]}")
+    scoring_results = run_order_scoring(client, order_ids)
+
+    for order in open_orders:
+        if order['asset_id'] == token_id:
+            order_price = float(order['price'])
+            order_id = order['id']
+            order_size = float(order['original_size'])
+            
+            logger.info(format_section(f"Processing order: {format_order_info(order_id, order_price, order_size)}"))
+            logger.info(f"Market info: {format_market_info(market_info['best_bid'], market_info['best_ask'])}")
+
+            # Check if order is scoring
+            is_scoring = scoring_results.get(order_id, False)
+            logger.info(f"Order {shorten_id(order_id)} scoring status: {is_scoring}")
+
+            # If the order is not scoring, cancel it immediately
+            if not is_scoring:
+                orders_to_cancel.append(order_id)
+                logger.info(f"Order {shorten_id(order_id)} is not scoring and will be cancelled")
+                cancelled_orders_cooldown[order_id] = time.time()
+                continue
+
+            # For scoring orders, check other conditions
+            should_cancel = False
+            cancel_reasons = []
+
+            # Check all conditions independently
+            logger.info("Checking cancellation conditions:")
+
+            # 1. Reward range check
+            outside_reward_range = abs(order_price - midpoint) > reward_range
+            if outside_reward_range:
+                should_cancel = True
+                cancel_reasons.append("outside the reward range")
+            logger.info(f"1. Outside reward range: {outside_reward_range}")
+
+            # 2. Too far from best bid
+            too_far_from_best_bid = (market_info['best_bid'] - order_price) > market_info['max_incentive_spread']
+            if too_far_from_best_bid:
+                should_cancel = True
+                cancel_reasons.append("too far from best bid")
+            logger.info(f"2. Too far from best bid: {too_far_from_best_bid}")
+
+            # 3. At the best bid
+            best_bid_excluding_current = max([float(bid.price) for bid in order_book.bids if float(bid.price) != order_price], default=0.0)
+            at_best_bid = order_price == market_info['best_bid']
+            logger.info(f"Order price: {order_price}, Best bid: {market_info['best_bid']}, Best bid excluding current: {best_bid_excluding_current}")
+            if at_best_bid:
+                should_cancel = True
+                cancel_reasons.append("at the best bid")
+            logger.info(f"3. At the best bid: {at_best_bid}")
+
+            # 4. Best bid value less than $500
+            best_bid_size = get_order_book_size_at_price(order_book, market_info['best_bid'])
+            best_bid_value = market_info['best_bid'] * best_bid_size
+            best_bid_value_low = best_bid_value < 500
+            if best_bid_value_low:
+                should_cancel = True
+                cancel_reasons.append("best bid value is less than $500")
+            logger.info(f"4. Best bid value < $500: {best_bid_value_low}")
+
+            # 5. Order book size check
+            order_book_size = get_order_book_size_at_price(order_book, order_price)
+            order_size_percentage = (order_size / order_book_size) * 100 if order_book_size > 0 else 0
+            order_size_too_large = order_size_percentage >= 50
+            if order_size_too_large:
+                should_cancel = True
+                cancel_reasons.append("order size is >= 50% of order book size")
+            logger.info(f"5. Order size >= 50% of order book size: {order_size_too_large}")
+
+            # Final decision for scoring orders
+            if should_cancel:
+                logger.info(f"Marking order {shorten_id(order_id)} for cancellation: {', '.join(cancel_reasons)}")
+                orders_to_cancel.append(order_id)
+            else:
+                logger.info(f"Order {shorten_id(order_id)} does not meet any cancellation criteria")
+
+    # Cancel all orders that meet the conditions
+    if orders_to_cancel:
+        try:
+            logger.info(f"Attempting to cancel orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+            client.cancel_orders(orders_to_cancel)
+            logger.info(f"Successfully cancelled orders: {[shorten_id(order_id) for order_id in orders_to_cancel]}")
+        except Exception as e:
+            logger.error(f"Failed to cancel orders: {str(e)}")
+            orders_to_cancel = []
+    else:
+        logger.info("No orders to cancel")
+
+    logger.info("Finished processing all orders for this token ID")
+    return orders_to_cancel
 
 def reorder(client: ClobClient, cancelled_order: Dict[str, Any], token_id: str, market_info: Dict[str, Any]) -> List[str]:
     """
@@ -416,3 +518,99 @@ def signal_handler(signum, frame):
     shutdown_flag = True
     executor.shutdown(wait=False)
 
+def main_loop():
+    """
+    Main loop that continuously executes the main function and auto_sell_filled_orders at specified intervals.
+    """
+    # Set up the signal handler for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Initialize the ClobClient once before the loop
+    try:
+        client = ClobClient(
+            host=POLYMARKET_HOST,
+            chain_id=int(os.getenv("CHAIN_ID")),
+            key=os.getenv("PRIVATE_KEY"),
+            signature_type=2,  # POLY_GNOSIS_SAFE
+            funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
+        )
+        client.set_api_creds(client.create_or_derive_api_creds())
+        logger.info("ClobClient initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize ClobClient: {e}", exc_info=True)
+        sys.exit(1)
+
+    while not shutdown_flag:
+        try:
+            # Submit the main order management task
+            future_main = executor.submit(main, client)
+            logger.info("Submitted main order management task to ThreadPoolExecutor.")
+
+            # Submit the auto_sell_filled_orders task
+            future_auto_sell = executor.submit(auto_sell_filled_orders, client)
+            logger.info("Submitted auto_sell_filled_orders task to ThreadPoolExecutor.")
+
+            logger.info("Sleeping for 10 seconds before next iteration...")
+            time.sleep(7)  # Adjust this interval as needed
+
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}", exc_info=True)
+            logger.info("Sleeping for 10 seconds before retry...")
+            time.sleep(7)
+
+def load_config():
+    with open('config.json', 'r') as file:
+        config = json.load(file)
+    return config
+
+class BotManager:
+    def __init__(self):
+        self.shutdown_flag = threading.Event()
+        self.client = None
+
+    def initialize_client(self):
+        # Initialize the ClobClient
+        try:
+            self.client = ClobClient(
+                host=os.getenv("POLYMARKET_HOST"),
+                chain_id=int(os.getenv("CHAIN_ID")),
+                key=os.getenv("PRIVATE_KEY"),
+                signature_type=2,  # POLY_GNOSIS_SAFE
+                funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
+            )
+            self.client.set_api_creds(self.client.create_or_derive_api_creds())
+            logger.info("ClobClient initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ClobClient: {e}", exc_info=True)
+            sys.exit(1)
+
+    def run(self):
+        logger.info("Bot is starting...")
+        self.initialize_client()
+        while not self.shutdown_flag.is_set():
+            try:
+                # Call your main bot logic here
+                self.main_loop()
+                # Sleep or wait for a certain interval before next iteration
+                time.sleep(7)  # Adjust as needed
+            except Exception as e:
+                logger.error(f"Error in bot execution: {e}", exc_info=True)
+                time.sleep(7)
+        logger.info("Bot has been stopped.")
+
+    def main_loop(self):
+        # Your main bot loop logic here
+        # For example:
+        main(self.client)
+
+    def stop(self):
+        self.shutdown_flag.set()
+        logger.info("Shutdown flag set. Bot will stop after the current iteration.")
+
+# If you have code that should run when executing this script directly,
+# you can protect it with `if __name__ == "__main__":`
+if __name__ == "__main__":
+    limitOrder_logger.parent = logger
+    __all__ = ['manage_orders', 'get_order_book_sync', 'get_market_info_sync']
+    bot_manager = BotManager()
+    bot_manager.run()

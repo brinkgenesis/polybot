@@ -81,18 +81,27 @@ def execute_order(client, signed_order):
         logger.info("Order posted, processing response")
 
         if resp['success']:
-            print_section("Execution Result", f"✅ Order executed successfully: {resp['orderID']}")
-            return True, resp['orderID']
+            logger.debug("Execution Result", f"✅ Order executed successfully: {resp['orderID']}")
+            return {
+                'success': True,
+                'order_id': resp['orderID']
+            }
         else:
             print_section("Execution Result", f"⚠️ Order may not have been placed correctly: {resp['errorMsg']}")
-            return False, resp['errorMsg']
+            return {
+                'success': False,
+                'error': resp['errorMsg']
+            }
 
     except Exception as e:
-        print_section("Execution Error", f"❌ Failed to execute order: {str(e)}")
+        logger.debug("Execution Error", f"❌ Failed to execute order: {str(e)}")
         logger.error(f"Exception Type: {type(e)}")
         logger.error(f"Exception Message: {e}", exc_info=True)
-        return False, str(e)
-
+        return {
+            'success': False,
+            'error': str(e)
+        }
+    
 def main():
     try:
         # Initialize the ClobClient with all necessary credentials

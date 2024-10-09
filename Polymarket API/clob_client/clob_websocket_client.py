@@ -42,6 +42,13 @@ class ClobWebSocketClient:
         self.logger.info(f"WebSocket connection closed: {close_status_code} - {close_msg}")
         # No keep-alive to stop
 
+    def send(self, message: str):
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            self.ws.send(message)
+            self.logger.info(f"Sent message: {message}")
+        else:
+            self.logger.error("WebSocket is not connected. Cannot send message.")
+
     def run_sync(self):
         reconnect_delay = 1  # Start with 1 second
         max_reconnect_delay = 60  # Maximum delay of 60 seconds
@@ -49,7 +56,7 @@ class ClobWebSocketClient:
         while True:
             try:
                 self.ws = websocket.WebSocketApp(
-                    os.getenv("WS_URL"),
+                    self.ws_url,
                     on_open=self.on_open,
                     on_message=self.on_message,
                     on_error=self.on_error,
