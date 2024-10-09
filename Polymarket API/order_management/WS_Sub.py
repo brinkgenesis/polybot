@@ -70,30 +70,36 @@ class WS_Sub:
             self.logger.error("WebSocket client initialization timed out. Cannot subscribe to assets.")
             return
 
-        with self.memory_lock:
-            new_assets = set(assets_ids) - self.subscribed_assets_ids
-
-        if not new_assets:
-            self.logger.info("No new assets to subscribe.")
-            return
 
         subscription_payload = {
             "type": "subscribe",
             "channel": "market",
-            "assets_ids": list(new_assets)  # Pass the entire list
+            "assets_ids": assets_ids  # Pass the entire list
         }
 
         try:
             if self.ws_app and self.ws_app.sock and self.ws_app.sock.connected:
-                self.logger.info(f"Subscribing to {len(new_assets)} assets.")
+                self.logger.info(f"Subscribing to {len(assets_ids)} assets.")
                 message = json.dumps(subscription_payload)
                 self.ws_app.send(message)
-                self.logger.info(f"Subscribed to assets: {list(new_assets)}")
-                self.subscribed_assets_ids.update(new_assets)
+                self.logger.info(f"Subscribed to assets: {list(assets_ids)}")
+                self.subscribed_assets_ids.update(assets_ids)
             else:
                 self.logger.error("WebSocket client is not connected. Cannot subscribe to assets.")
         except Exception as e:
             self.logger.error(f"Failed to subscribe to assets: {e}", exc_info=True)
+
+    def unsubscribe_all(self):
+        if not self.ws_app or not self.ws_app.sock or not self.ws_app.sock.connected:
+            self.logger.warning("WebSocket is not connected. Cannot unsubscribe.")
+            return
+        unsubscribe_message = {
+            "type": "unsubscribe",
+            "assets": []  # Assuming an empty list unsubscribes all
+        }
+        self.ws_app.send(json.dumps(unsubscribe_message))
+        self.logger.info("Sent unsubscription message for all assets.")
+
 
     def run(self):
         """
@@ -124,6 +130,16 @@ class WS_Sub:
             self.logger.info(f"Attempting to reconnect in {reconnect_delay} seconds...")
             time.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)  # Exponential backoff
+
+    def reconnect(self):
+           """
+           Handle reconnection with exponential backoff.
+           """
+           self.logger.info(f"Attempting to reconnect in {self.reconnect_delay} seconds...")
+           time.sleep(self.reconnect_delay)
+           self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+           if self.is_running:
+               self.run()
 
     def shutdown(self):
         """
