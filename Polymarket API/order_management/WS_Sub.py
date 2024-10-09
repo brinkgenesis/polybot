@@ -9,6 +9,10 @@ from utils.utils import shorten_id
 from websocket import WebSocketApp
 import ssl
 import certifi
+import sys
+
+
+print(sys.path)
 
 class WS_Sub:
     def __init__(self, memory_lock: threading.Lock, event_callback: Callable[[Dict[str, Any]], None], on_connected: Callable[[], None]):
