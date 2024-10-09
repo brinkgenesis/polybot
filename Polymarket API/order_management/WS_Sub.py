@@ -117,7 +117,7 @@ class WS_Sub:
         while self.is_running:
             try:
                 self.logger.info(f"Connecting to WebSocket URL: {self.ws_url}")
-                self.ws_app = websocket.WebSocketApp(
+                self.ws_app = WebSocketApp(
                     self.ws_url,
                     on_open=self.on_open,
                     on_message=self.on_message,
