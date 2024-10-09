@@ -4,9 +4,11 @@ from typing import Any, Callable, Dict, List
 from datetime import datetime, timezone
 import time
 import os
+print(os.path.abspath(__file__))
 import json
 from utils.utils import shorten_id
 from websocket import WebSocketApp
+print("WebSocketApp imported successfully")
 import ssl
 import certifi
 import sys
