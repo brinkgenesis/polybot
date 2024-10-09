@@ -6,7 +6,7 @@ import time
 import os
 import json
 from utils.utils import shorten_id
-import websocket
+from websocket import WebSocketApp
 import ssl
 import certifi
 
