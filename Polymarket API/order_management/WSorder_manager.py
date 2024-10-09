@@ -24,6 +24,7 @@ class WSOrderManager:
         self.logger.setLevel(logging.INFO)
         self.is_running = True
         self.assets_ids: Set[str] = set()
+        self.subscribed_assets_ids: Set[str] = set()
         self.open_orders: List[Dict[str, Any]] = []
         self.local_order_memory: Dict[str, Dict[str, Any]] = {}  # key: order_id, value: order details
         self.memory_lock = threading.Lock()
@@ -46,7 +47,7 @@ class WSOrderManager:
 
 
 
-        self.subscribe_to_assets(list(self.assets_ids))
+        self.subscribe_to_assets()
 
                 # Initialize reorder cooldown management
         #self.cooldown_lock = threading.Lock()
@@ -176,17 +177,17 @@ class WSOrderManager:
         self.logger.info("WebSocket connected successfully.")
 
 
-    def subscribe_to_assets(self, assets_ids: List[str]):
+    def subscribe_to_assets(self):
         """
         Subscribe to the provided list of asset IDs via WS_Sub.
 
         :param asset_ids: List of asset IDs to subscribe to.
         """
-        self.logger.info(f"Attempting to subscribe to assets: {assets_ids}")
+        self.logger.info(f"Attempting to subscribe to assets: {self.assets_ids}")
         try:
-            if assets_ids:
+            if self.assets_ids:
                 # Determine new assets to subscribe to
-                new_assets = set(assets_ids) - self.assets_ids
+                new_assets = set(self.assets_ids) - self.subscribed_assets_ids
                 
                 if new_assets:
                     # Update the persistent set
@@ -194,6 +195,7 @@ class WSOrderManager:
                     
                     # Subscribe to the new assets
                     self.ws_subscriber.subscribe(list(new_assets))
+                    self.subscribed_assets_ids.update(new_assets)
                     self.logger.info(f"Subscribed to new assets: {list(new_assets)}")
                 else:
                     self.logger.info("All assets already subscribed.")
@@ -397,10 +399,10 @@ class WSOrderManager:
 
                 # Ensure the asset is subscribed (it should already be in self.assets_ids)
                 if asset_id not in self.assets_ids:
-                   self.subscribe_to_assets([asset_id])
+                   self.subscribe_to_assets()
 
                 # Set total order size
-                total_order_size = float(cancelled_order.get('size') or cancelled_order.get('original_size'))
+                total_order_size = cancelled_order.get('original_size')
                 if total_order_size == 0:
                     self.logger.error(f"Invalid order size for order {shorten_id(order_id)}. Order details: {cancelled_order}")
                     continue
