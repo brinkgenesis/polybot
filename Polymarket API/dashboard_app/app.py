@@ -1,4 +1,5 @@
 # app.py
+import os
 import dash
 from dash import html, dcc, Output, Input, State, callback_context
 import dash_bootstrap_components as dbc
@@ -6,20 +7,52 @@ import pandas as pd
 import logging
 import io
 
-from order_management.order_manager import BotManager
+from order_management.WSorder_manager import WSOrderManager
 from rewards_dashboard.rewardsDashboard import run_rewardsDash
 from utils.utils import shorten_id
 
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import ApiCreds
+
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Declare global variables
+client = None
+bot_manager = None
 
 # Initialize the Dash app with a Bootstrap theme
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server  # For deployment purposes
 
-# Initialize BotManager
-bot_manager = BotManager()
+
+
+# Initialize the client
+def initialize_client():
+    try:
+        creds = ApiCreds(
+            api_key=str(os.getenv("POLY_API_KEY")),
+            api_secret=str(os.getenv("POLY_API_SECRET")),
+            api_passphrase=str(os.getenv("POLY_PASSPHRASE"))
+        )
+
+        client = ClobClient(
+            host=os.getenv("POLYMARKET_HOST"),
+            chain_id=int(os.getenv("CHAIN_ID")),
+            key=os.getenv("PRIVATE_KEY"),
+            creds=creds,
+            signature_type=2,  # POLY_GNOSIS_SAFE
+            funder=os.getenv("POLYMARKET_PROXY_ADDRESS")
+        )
+
+        client.set_api_creds(client.derive_api_key())
+        logger.info("ClobClient initialized successfully.")
+        return client
+
+    except Exception as e:
+        logger.error(f"Failed to initialize ClobClient: {e}", exc_info=True)
+        return None
 
 # Layout of the app
 app.layout = dbc.Container([
@@ -84,6 +117,8 @@ app.layout = dbc.Container([
      Input('stop-button', 'n_clicks')]
 )
 def control_bot(start_clicks, stop_clicks):
+    global client, bot_manager  # Declare as global to modify them
+
     ctx = callback_context
 
     if not ctx.triggered:
@@ -92,7 +127,15 @@ def control_bot(start_clicks, stop_clicks):
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
     if button_id == 'start-button':
-        if not bot_manager.is_running:
+        if bot_manager is None or not bot_manager.is_running:
+            # Initialize the client
+            client = initialize_client()
+            if client is None:
+                logger.error("Failed to initialize ClobClient. Cannot start the bot.")
+                return dbc.Alert("Failed to initialize client. Cannot start the bot.", color="danger")
+            
+            # Initialize BotManager with the client
+            bot_manager = WSOrderManager(client)
             bot_manager.start_bot()
             logger.info("Bot started.")
             return dbc.Alert("Bot started successfully.", color="success")
@@ -101,7 +144,7 @@ def control_bot(start_clicks, stop_clicks):
             return dbc.Alert("Bot is already running.", color="info")
 
     elif button_id == 'stop-button':
-        if bot_manager.is_running:
+        if bot_manager is not None and bot_manager.is_running:
             bot_manager.stop_bot()
             logger.info("Bot stopped.")
             return dbc.Alert("Bot stopped successfully.", color="danger")
@@ -110,7 +153,7 @@ def control_bot(start_clicks, stop_clicks):
             return dbc.Alert("Bot is not running.", color="info")
 
     return ""
-   
+
 # Callback to fetch rewards data
 @app.callback(
     Output('rewards-dashboard', 'children'),

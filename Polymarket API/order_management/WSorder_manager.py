@@ -1,5 +1,4 @@
 # File: order_management/WSorder_manager.py
-
 import logging
 import threading
 import time
@@ -35,19 +34,16 @@ class WSOrderManager:
             event_callback=self.handle_event,
             on_connected=self.on_ws_connected
         )
-
         self.ws_subscriber_thread = threading.Thread(target=self.ws_subscriber.run, daemon=True)
         self.ws_subscriber_thread.start()
         self.logger.info("WS_Sub thread started.")
-        
-
          # Initialize scoring thread
         self.scoring_thread = threading.Thread(target=self.check_order_scoring_loop, daemon=True)
         self.scoring_thread.start()
-
-
-
         self.subscribe_to_assets()
+
+        pass
+
 
                 # Initialize reorder cooldown management
         #self.cooldown_lock = threading.Lock()
@@ -62,6 +58,24 @@ class WSOrderManager:
         # self.reorder_watcher_thread = threading.Thread(target=self.reorder_watcher, daemon=True)
         # self.reorder_watcher_thread.start()
         # self.logger.info("Reorder watcher thread started.")
+
+    def start_bot(self):
+        if not self.is_running:
+            self.is_running = True
+            self.thread = threading.Thread(target=self.run)
+            self.thread.start()
+            self.logger.info("WSOrderManager started.")
+        else:
+            self.logger.info("WSOrderManager is already running.")
+
+    def stop_bot(self):
+        if self.is_running:
+            self.is_running = False
+            self.thread.join()
+            self.logger.info("WSOrderManager stopped.")
+        else:
+            self.logger.info("WSOrderManager is not running.")
+
 
     def run(self):
         self.logger.info("Starting WSOrderManager...")
@@ -171,18 +185,11 @@ class WSOrderManager:
             self.logger.error(f"Error processing order book for asset_id {order_book.token_id}: {e}", exc_info=True)
 
     def on_ws_connected(self):
-        """
-        Callback invoked when the WebSocket connection is established.
-        """
+
         self.logger.info("WebSocket connected successfully.")
 
-
     def subscribe_to_assets(self):
-        """
-        Subscribe to the provided list of asset IDs via WS_Sub.
 
-        :param asset_ids: List of asset IDs to subscribe to.
-        """
         self.logger.info(f"Attempting to subscribe to assets: {self.assets_ids}")
         try:
             if self.assets_ids:
@@ -250,15 +257,7 @@ class WSOrderManager:
         self.logger.info(f"Price change detected for asset {asset_id}: New Price = {new_price}")
 
     def manage_orders(self, asset_id: str, best_bid_event: float, best_ask_event: float, midpoint_event: float, best_bid_size: float):
-        """
-        Manages orders by evaluating cancellation criteria and handling cancellations.
-        
-        :param asset_id: The asset ID being managed.
-        :param best_bid_event: The latest best bid price.
-        :param best_ask_event: The latest best ask price.
-        :param midpoint_event: The latest midpoint price.
-        :param best_bid_size: The size associated with the best bid.
-        """
+
         cancelled_orders = []
         
         try:
@@ -278,9 +277,9 @@ class WSOrderManager:
             orders_to_cancel = []
             
             # Constants
-            TICK_SIZE = 0.01
+            TICK_SIZE = os.getenv("TICK_SIZE")
             REWARD_RANGE = 3 * TICK_SIZE  # 0.03
-            MAX_INCENTIVE_SPREAD = 0.02  # 0.02
+            MAX_INCENTIVE_SPREAD = os.getenv("MAX_INCENTIVE_SPREAD")
             
             for order in relevant_orders:
                 order_id = order['id']
@@ -326,10 +325,7 @@ class WSOrderManager:
         self.logger.info(f"Marking order {shortened_id} for cancellation: {reasons_formatted}")
 
     def check_order_scoring_loop(self):
-        """
-        Periodically checks the scoring of all active orders and cancels those that are not scoring.
-        Runs every 10 seconds.
-        """
+
         self.logger.info("Starting order scoring thread...")
         while self.is_running:
             try:
@@ -350,7 +346,6 @@ class WSOrderManager:
                     if orders_to_cancel:
                         self.cancel_orders(orders_to_cancel)
                         self.logger.info(f"Canceled orders: {orders_to_cancel}")
-                    
 
                 else:
                     self.logger.info("No active orders to check scoring.")
@@ -362,12 +357,6 @@ class WSOrderManager:
                 time.sleep(10)
 
     def cancel_orders(self, orders_to_cancel: List[str]) -> None:
-        """
-        Cancels the given list of orders.
-
-        :param orders_to_cancel: List of order IDs to cancel.
-        """
-
         try:
             # Call the client's cancel_orders method, assuming it accepts a list of order IDs
             self.client.cancel_orders(orders_to_cancel)
@@ -379,14 +368,6 @@ class WSOrderManager:
             self.logger.error(f"Failed to cancel orders {orders_to_cancel}: {e}", exc_info=True)
 
     def reorder(self, cancelled_orders: List[str], asset_id: str, best_bid_event: float) -> List[str]:
-        """
-        Reorders based on the cancelled order details.
-
-        :param cancelled_orders: List of canceled order IDs.
-        :param asset_id: The asset ID associated with the orders.
-        :param best_bid_event: The latest best bid price for the asset.
-        :return: List of new order IDs from executing reordered orders.
-        """
         results = []
         new_order_ids = []  # To keep track of new orders for memory updates
 
@@ -430,10 +411,6 @@ class WSOrderManager:
                 if maker_amount_70 < min_allowed_price:
                     self.logger.info("70% order exceeds maximum allowed difference from best bid. Adjusting price.")
                     maker_amount_70 = min_allowed_price
-
-                self.logger.info(f"Best Bid: {best_bid}")
-                self.logger.info(f"Maker Amount 30%: {maker_amount_30}")
-                self.logger.info(f"Maker Amount 70%: {maker_amount_70}")
                
                 # Build and execute 30% order
                 if order_size_30 >= 0.0001:
@@ -447,14 +424,12 @@ class WSOrderManager:
                     result_30 = execute_order(self.client, signed_order_30)
                     self.logger.info(f"30% order executed: {result_30}")
                     
-             
                     if result_30['success']:
                         order_id_30 = result_30['order_id']
                         results.append(order_id_30)
                         new_order_ids.append(order_id_30)
                         # Add new order to local_order_memory
                         with self.memory_lock:
-                            self.logger.debug(f"Converting maker_amount_30 to float. Type: {type(maker_amount_30)}, Value: {maker_amount_30}")
                             self.local_order_memory[order_id_30] = {
                                 'asset_id': asset_id,
                                 'price': float(maker_amount_30),
@@ -479,14 +454,12 @@ class WSOrderManager:
                     result_70 = execute_order(self.client, signed_order_70)
                     self.logger.info(f"70% order executed: {result_70}")
                     
-                    
                     if result_70['success']:
                         order_id_70 = result_70['order_id']
                         results.append(order_id_70)
                         new_order_ids.append(order_id_70)
                         # Add new order to local_order_memory
                         with self.memory_lock:
-                            self.logger.debug(f"Converting maker_amount_70 to float. Type: {type(maker_amount_70)}, Value: {maker_amount_70}")
                             self.local_order_memory[order_id_70] = {
                                 'asset_id': asset_id,
                                 'price': float(maker_amount_70),
@@ -507,8 +480,6 @@ class WSOrderManager:
 
         except Exception as e:
             self.logger.error(f"Error building or executing orders for {shorten_id(order_id)}: {str(e)}")
-            # Do not remove the old order from local_order_memory if reordering fails
-            # Optionally, handle exceptions such as retrying or logging to a persistent store
 
         return results
       
@@ -532,12 +503,11 @@ class WSOrderManager:
         self.ws_subscriber.unsubscribe_all()
         self.logger.info("WSOrderManager shutdown complete.") 
 
-if __name__ == "__main__":
+def main():
     logging.basicConfig(
         level=logging.INFO,
         format='%(message)s'
     )
-
     # Initialize client
     try:
         creds = ApiCreds(
@@ -569,3 +539,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         ws_order_manager.shutdown()
         logging.info("Order Manager stopped by user.")
+
+if __name__ == "__main__":
+    main()
