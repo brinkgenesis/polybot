@@ -236,42 +236,70 @@ class WSOrderManager:
 
             self.logger.info(f"Bid-Ask Ratio for asset {shorten_id(asset_id)}: {bid_ask_ratio}")
 
-            # Check for market imbalance
-            if bid_ask_ratio < 0.8:
-                self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
-                self.handle_bid_ask(asset_id)
-                return  # Exit early due to imbalance
-
-
-                    # Variables to keep track of market imbalance state
-            if asset_id not in self.market_imbalance:
-                self.market_imbalance[asset_id] = False
-
-            if bid_ask_ratio < 0.8 or bid_ask_ratio > 1.2:
-                if not self.market_imbalance[asset_id]:
-                    self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
-                    self.market_imbalance[asset_id] = True
-                    self.handle_bid_ask(asset_id)
-                return
-            else:
-           
-                if self.market_imbalance[asset_id]:
-                    self.logger.info(f"Market has stabilized for asset {shorten_id(asset_id)}. Resuming normal operations.")
-                    self.market_imbalance[asset_id] = False
-                # Logic to re-place orders can be added here
-
-            try:
-                # Extract the best bid (max price) and its corresponding size
+            # Extract the best bid (max price) and its corresponding size
+            if bids:
                 best_bid_data = max(bids, key=lambda x: float(x['price']))
                 best_bid_event = float(best_bid_data['price'])
                 best_bid_size = float(best_bid_data['size'])
+                best_bid_value = best_bid_event * best_bid_size
+                self.logger.info(f"Best Bid: {best_bid_event} with size {best_bid_size}")
+            else:
+                self.logger.warning(f"No bids available for asset {shorten_id(asset_id)}. Using default best_bid_event = 0.0.")
+                best_bid_event = 0.0
+                best_bid_size = 0.0
+                best_bid_value = 0.0
 
+            # Variables to keep track of market imbalance state
+            if asset_id not in self.market_imbalance:
+                self.market_imbalance[asset_id] = False
+
+            # **Modified Logic Begins Here**
+            # Check for market imbalance based on bid-ask ratio or best bid value
+            if bid_ask_ratio < 0.8 or best_bid_value < 500:
+                if not self.market_imbalance[asset_id]:
+                    if bid_ask_ratio < 0.8:
+                        self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
+                    if best_bid_value < 500:
+                        self.logger.info(f"Best bid value for asset {shorten_id(asset_id)} is less than $500 (Value: {best_bid_value}).")
+                    self.market_imbalance[asset_id] = True
+                    self.handle_bid_ask(asset_id)
+                return  # Exit early due to imbalance or low best bid value
+            else:
+                if self.market_imbalance[asset_id]:
+                    self.logger.info(f"Market has stabilized for asset {shorten_id(asset_id)}. Resuming normal operations.")
+                    self.market_imbalance[asset_id] = False
+
+                # **New Logic Begins Here**
+                # Check if there are existing open orders for this asset
+                with self.memory_lock:
+                    open_orders_for_asset = [
+                        order for order in self.local_order_memory.values()
+                        if order['asset_id'] == asset_id
+                    ]
+
+                if open_orders_for_asset:
+                    self.logger.info(f"Existing open orders found for asset {shorten_id(asset_id)}. Skipping reordering.")
+                else:
+                    self.logger.info(f"No open orders for asset {shorten_id(asset_id)}. Proceeding to reorder.")
+
+                    # **Required Parameters for reorder**
+                    # 1. cancelled_orders: Since this is a fresh reorder, there are no cancelled orders in this context.
+                    #    We'll pass an empty list.
+                    cancelled_orders = []
+
+                    # 2. best_bid_event: Already extracted above
+                    # (best_bid_event is already computed before)
+
+                    # **Call the reorder function with required parameters**
+                    self.place_new_orders(self, str(asset_id), float(best_bid_event))
+                # **New Logic Ends Here**
+
+            try:
                 # Extract the best ask (min price) and its corresponding size
                 best_ask_data = min(asks, key=lambda x: float(x['price']))
                 best_ask_event = float(best_ask_data['price'])
                 best_ask_size = float(best_ask_data['size'])
 
-                self.logger.info(f"Best Bid: {best_bid_event} with size {best_bid_size}")
                 self.logger.info(f"Best Ask: {best_ask_event} with size {best_ask_size}")
 
                 midpoint_event = (best_bid_event + best_ask_event) / 2
@@ -377,6 +405,42 @@ class WSOrderManager:
 
         except Exception as e:
             self.logger.error(f"Error managing orders for asset_id {shorten_id(asset_id)}: {str(e)}", exc_info=True)
+
+    def place_new_orders(self, asset_id: str, best_bid_event: float):
+         """
+         Place new orders based on the best_bid_event for the given asset_id.
+         """
+         try:
+             # Define order parameters based on best_bid_event
+             new_order_price = round(best_bid_event - (2 * os.getenv("TICK_SIZE")), 2) # Adjust as needed
+             new_order_size =  round(os.getenv("MAX_ORDER_SIZE",450)/ new_order_price,0)  # Implement this method
+
+             # Build and execute the new order
+             signed_order = build_order(
+                 self.client,
+                 str(asset_id),
+                 float(new_order_size),
+                 float(new_order_price),
+                 'BUY'  # or 'SELL' based on your strategy
+             )
+             result = execute_order(self.client, signed_order)
+             self.logger.info(f"New order executed: {result}")
+
+             if result['success']:
+                 order_id = result['order_id']
+                 with self.memory_lock:
+                     self.local_order_memory[order_id] = {
+                         'asset_id': asset_id,
+                         'price': float(new_order_price),
+                         'original_size': float(new_order_size),
+                         'amount': float(new_order_price) * float(new_order_size),
+                         # Include other necessary details
+                     }
+                     self.logger.info(f"Added new order {shorten_id(order_id)} to local memory.")
+             else:
+                 self.logger.error(f"Failed to execute new order for {shorten_id(asset_id)}. Reason: {result['error']}")
+         except Exception as e:
+             self.logger.error(f"Error placing new orders for asset {shorten_id(asset_id)}: {e}", exc_info=True)
 
 
     def log_cancellation(self, order_id: str, reasons: List[str]):
