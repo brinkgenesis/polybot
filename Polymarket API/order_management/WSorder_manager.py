@@ -223,9 +223,42 @@ class WSOrderManager:
             bids = data.get("bids", [])
             asks = data.get("asks", [])
 
-            if not bids or not asks:
-                self.logger.warning(f"No bids or asks found in the event data: {data}")
+            # Calculate total bids and asks volume
+            total_bids = sum(float(bid['size']) for bid in bids)
+            total_asks = sum(float(ask['size']) for ask in asks)
+
+            # Avoid division by zero
+            if total_asks == 0:
+                self.logger.warning(f"Total asks volume is zero for asset {shorten_id(asset_id)}. Setting bid-ask ratio to infinity.")
+                bid_ask_ratio = float('inf')
+            else:
+                bid_ask_ratio = total_bids / total_asks
+
+            self.logger.info(f"Bid-Ask Ratio for asset {shorten_id(asset_id)}: {bid_ask_ratio}")
+
+            # Check for market imbalance
+            if bid_ask_ratio < 0.8:
+                self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
+                self.handle_bid_ask(asset_id)
+                return  # Exit early due to imbalance
+
+
+                    # Variables to keep track of market imbalance state
+            if asset_id not in self.market_imbalance:
+                self.market_imbalance[asset_id] = False
+
+            if bid_ask_ratio < 0.8 or bid_ask_ratio > 1.2:
+                if not self.market_imbalance[asset_id]:
+                    self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
+                    self.market_imbalance[asset_id] = True
+                    self.handle_bid_ask(asset_id)
                 return
+            else:
+           
+                if self.market_imbalance[asset_id]:
+                    self.logger.info(f"Market has stabilized for asset {shorten_id(asset_id)}. Resuming normal operations.")
+                    self.market_imbalance[asset_id] = False
+                # Logic to re-place orders can be added here
 
             try:
                 # Extract the best bid (max price) and its corresponding size
@@ -255,6 +288,32 @@ class WSOrderManager:
         asset_id = data.get("asset_id")
         new_price =data.get("price")
         self.logger.info(f"Price change detected for asset {asset_id}: New Price = {new_price}")
+
+    def handle_bid_ask(self, asset_id: str):
+
+        self.logger.info(f"Cancelling orders for asset {shorten_id(asset_id)} due to market imbalance.")
+
+        with self.memory_lock:
+            # Find all order IDs related to the asset_id
+            orders_to_cancel = [
+                order_id for order_id, details in self.local_order_memory.items()
+                if details['asset_id'] == asset_id
+            ]
+
+        if orders_to_cancel:
+            self.logger.info(f"Orders to cancel for asset {shorten_id(asset_id)}: {orders_to_cancel}")
+            self.cancel_orders(orders_to_cancel)
+            self.logger.info(f"Cancelled orders: {orders_to_cancel}")
+
+            # Optionally, remove cancelled orders from local memory
+            with self.memory_lock:
+                for order_id in orders_to_cancel:
+                    self.local_order_memory.pop(order_id, None)
+                    self.logger.info(f"Removed order {shorten_id(order_id)} from local memory due to market imbalance.")
+        else:
+            self.logger.info(f"No orders to cancel for asset {shorten_id(asset_id)}.")
+
+            #add a tag here and pass it to manage orders so that it does not reorder like if, reorder = FALSE skip reorder
 
     def manage_orders(self, asset_id: str, best_bid_event: float, best_ask_event: float, midpoint_event: float, best_bid_size: float):
 
@@ -310,6 +369,7 @@ class WSOrderManager:
                 self.cancel_orders(orders_to_cancel)
                 self.logger.info(f"Attempting to cancel orders: {orders_to_cancel}")
                 # Trigger reorder immediately after cancelling orders
+                #add tag here to prevent reordering for certain cases.
                 reorder_results = self.reorder(cancelled_orders, asset_id, best_bid_event)
                 self.logger.info(f"Reorder results: {reorder_results}")
             else:

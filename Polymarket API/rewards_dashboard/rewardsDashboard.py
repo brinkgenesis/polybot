@@ -15,18 +15,18 @@ from gamma_client.gamma_market_api import get_gamma_market_data
 from tabulate import tabulate
 
 # Import functions and utilities from order_manager and utils
-from order_management.order_manager import get_open_orders
+from order_management.OLD.order_managerW import get_open_orders
 from utils.utils import shorten_id
 
 
 
 # Configure logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)  # Set to DEBUG to capture all levels of logs
+logger.setLevel(logging.INFO)  # Set to DEBUG to capture all levels of logs
 
 # Create console handler and set level to DEBUG
 ch = logging.StreamHandler(sys.stdout)
-ch.setLevel(logging.WARNING)
+ch.setLevel(logging.INFO)
 
 # Create formatter
 formatter = logging.Formatter('%(message)s')
@@ -461,9 +461,7 @@ def main():
                     'aggregate_apr': aggregate_apr
                 }
             }
-        else:
-            logger.warning("No rewards data available after processing.")
-            return {'status': 'no_data'}
+        e
 
     except Exception as e:
         logger.error(f"An error occurred in rewardsDashboard.main(): {e}", exc_info=True)
