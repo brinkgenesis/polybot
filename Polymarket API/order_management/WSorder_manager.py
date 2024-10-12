@@ -27,6 +27,8 @@ class WSOrderManager:
         self.open_orders: List[Dict[str, Any]] = []
         self.local_order_memory: Dict[str, Dict[str, Any]] = {}  # key: order_id, value: order details
         self.memory_lock = threading.Lock()
+
+        self.market_imbalance: Dict[str, bool] = {}
         
         # Initialize WS_Sub instance, passing the shared lock and event callback
         self.ws_subscriber = WS_Sub(
@@ -291,7 +293,7 @@ class WSOrderManager:
                     # (best_bid_event is already computed before)
 
                     # **Call the reorder function with required parameters**
-                    self.place_new_orders(self, str(asset_id), float(best_bid_event))
+                    self.place_new_orders(str(asset_id), float(best_bid_event))
                 # **New Logic Ends Here**
 
             try:
