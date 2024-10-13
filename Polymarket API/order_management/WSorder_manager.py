@@ -226,8 +226,9 @@ class WSOrderManager:
             asks = data.get("asks", [])
 
             # Calculate total bids and asks volume
-            total_bids = sum(float(bid['size']) for bid in bids)
-            total_asks = sum(float(ask['size']) for ask in asks)
+            # Updated to sum of (price * size) for each bid and ask
+            total_bids = sum(float(bid['price']) * float(bid['size']) for bid in bids)
+            total_asks = sum(float(ask['price']) * float(ask['size']) for ask in asks)
 
             # Avoid division by zero
             if total_asks == 0:
@@ -245,27 +246,64 @@ class WSOrderManager:
                 best_bid_size = float(best_bid_data['size'])
                 best_bid_value = best_bid_event * best_bid_size
                 self.logger.info(f"Best Bid: {best_bid_event} with size {best_bid_size}")
+                self.logger.info(f"Best Bid Value: {best_bid_value}")
             else:
                 self.logger.warning(f"No bids available for asset {shorten_id(asset_id)}. Using default best_bid_event = 0.0.")
                 best_bid_event = 0.0
                 best_bid_size = 0.0
                 best_bid_value = 0.0
 
-            # Variables to keep track of market imbalance state
-            if asset_id not in self.market_imbalance:
-                self.market_imbalance[asset_id] = False
+            # Define the conditions dictionary
+            conditions = {
+                'ratio_gt_0.8_and_value_ge_200': {
+                    'condition': lambda ratio, value: ratio > 0.8 and value >= 200,
+                    'state': 'acceptable'
+                },
+                'ratio_gt_0.8_and_value_lt_200': {
+                    'condition': lambda ratio, value: ratio > 0.8 and value < 200,
+                    'state': 'unstable'
+                },
+                'ratio_between_0.3_and_0.8_and_value_ge_500': {
+                    'condition': lambda ratio, value: 0.3 < ratio < 0.8 and value >= 500,
+                    'state': 'acceptable'
+                },
+                'ratio_between_0.3_and_0.8_and_value_lt_500': {
+                    'condition': lambda ratio, value: 0.3 < ratio < 0.8 and value < 500,
+                    'state': 'unstable'
+                },
+                'ratio_between_0.2_and_0.3_and_value_ge_800': {
+                    'condition': lambda ratio, value: 0.2 < ratio < 0.3 and value >= 800,
+                    'state': 'acceptable'
+                },
+                'ratio_between_0.2_and_0.3_and_value_lt_800': {
+                    'condition': lambda ratio, value: 0.2 < ratio < 0.3 and value < 800,
+                    'state': 'unstable'
+                },
+                'ratio_lt_0.2_or_value_lt_200': {
+                    'condition': lambda ratio, value: ratio < 0.2 or value < 200,
+                    'state': 'unstable'
+                },
+            }
 
-            # **Modified Logic Begins Here**
-            # Check for market imbalance based on bid-ask ratio or best bid value
-            if bid_ask_ratio < 0.8 or best_bid_value < 200:
+            # Determine the current market state based on conditions
+            market_state = 'unstable'  # Default state
+            for cond_name, cond_details in conditions.items():
+                if cond_details['condition'](bid_ask_ratio, best_bid_value):
+                    market_state = cond_details['state']
+                    self.logger.info(f"Condition '{cond_name}' met. Market state set to '{market_state}'.")
+                    break  # Exit after the first matching condition
+
+            # Variables to keep track of market imbalance state
+            with self.memory_lock:
+                if asset_id not in self.market_imbalance:
+                    self.market_imbalance[asset_id] = False
+
+            if market_state == 'unstable':
                 if not self.market_imbalance[asset_id]:
-                    if bid_ask_ratio < 0.8:
-                        self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
-                    if best_bid_value < 200:
-                        self.logger.info(f"Best bid value for asset {shorten_id(asset_id)} is less than $500 (Value: {best_bid_value}).")
+                    self.logger.info(f"Market deemed unstable for asset {shorten_id(asset_id)} based on conditions.")
                     self.market_imbalance[asset_id] = True
                     self.handle_bid_ask(asset_id)
-                return  # Exit early due to imbalance or low best bid value
+                return  # Exit early due to unstable market
             else:
                 if self.market_imbalance[asset_id]:
                     self.logger.info(f"Market has stabilized for asset {shorten_id(asset_id)}. Resuming normal operations.")
@@ -293,16 +331,20 @@ class WSOrderManager:
                     # (best_bid_event is already computed before)
 
                     # **Call the reorder function with required parameters**
-                    self.place_new_orders(str(asset_id), float(best_bid_event))
+                    self.reorder(cancelled_orders, asset_id, best_bid_event)
                 # **New Logic Ends Here**
 
             try:
                 # Extract the best ask (min price) and its corresponding size
-                best_ask_data = min(asks, key=lambda x: float(x['price']))
-                best_ask_event = float(best_ask_data['price'])
-                best_ask_size = float(best_ask_data['size'])
-
-                self.logger.info(f"Best Ask: {best_ask_event} with size {best_ask_size}")
+                if asks:
+                    best_ask_data = min(asks, key=lambda x: float(x['price']))
+                    best_ask_event = float(best_ask_data['price'])
+                    best_ask_size = float(best_ask_data['size'])
+                    self.logger.info(f"Best Ask: {best_ask_event} with size {best_ask_size}")
+                else:
+                    self.logger.warning(f"No asks available for asset {shorten_id(asset_id)}. Using default best_ask_event = 0.0.")
+                    best_ask_event = 0.0
+                    best_ask_size = 0.0
 
                 midpoint_event = (best_bid_event + best_ask_event) / 2
 
