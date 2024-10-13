@@ -257,11 +257,11 @@ class WSOrderManager:
 
             # **Modified Logic Begins Here**
             # Check for market imbalance based on bid-ask ratio or best bid value
-            if bid_ask_ratio < 0.8 or best_bid_value < 500:
+            if bid_ask_ratio < 0.8 or best_bid_value < 200:
                 if not self.market_imbalance[asset_id]:
                     if bid_ask_ratio < 0.8:
                         self.logger.info(f"Market imbalance detected for asset {shorten_id(asset_id)}. Bid-Ask Ratio is {bid_ask_ratio}.")
-                    if best_bid_value < 500:
+                    if best_bid_value < 200:
                         self.logger.info(f"Best bid value for asset {shorten_id(asset_id)} is less than $500 (Value: {best_bid_value}).")
                     self.market_imbalance[asset_id] = True
                     self.handle_bid_ask(asset_id)
