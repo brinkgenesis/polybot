@@ -27,6 +27,9 @@ class WSOrderManager:
         self.open_orders: List[Dict[str, Any]] = []
         self.local_order_memory: Dict[str, Dict[str, Any]] = {}  # key: order_id, value: order details
         self.memory_lock = threading.Lock()
+        self.TICK_SIZE = 0.01  # Example value; adjust as needed
+        self.MAX_INCENTIVE_SPREAD = 0.02  # Example value; adjust as needed
+    
 
         self.market_imbalance: Dict[str, bool] = {}
         
@@ -60,6 +63,8 @@ class WSOrderManager:
         # self.reorder_watcher_thread = threading.Thread(target=self.reorder_watcher, daemon=True)
         # self.reorder_watcher_thread.start()
         # self.logger.info("Reorder watcher thread started.")
+
+
 
     def start_bot(self):
         if not self.is_running:
@@ -225,10 +230,25 @@ class WSOrderManager:
             bids = data.get("bids", [])
             asks = data.get("asks", [])
 
+
+           # Ensure bids are sorted in descending order (highest price first)
+            sorted_bids = sorted(bids, key=lambda x: float(x['price']), reverse=True)
+                # Ensure asks are sorted in ascending order (lowest price first)
+            sorted_asks = sorted(asks, key=lambda x: float(x['price']))
+
+            # Select top 5 levels for bids and asks
+            top_bids = sorted_bids[:5]
+            top_asks = sorted_asks[:5]
+
+            self.logger.info(f"Using top 5 bids and asks for bid-ask ratio calculation.")
+
             # Calculate total bids and asks volume
             # Updated to sum of (price * size) for each bid and ask
-            total_bids = sum(float(bid['price']) * float(bid['size']) for bid in bids)
-            total_asks = sum(float(ask['price']) * float(ask['size']) for ask in asks)
+            total_bids = sum(float(bid['price']) * float(bid['size']) for bid in top_bids)
+            total_asks = sum(float(ask['price']) * float(ask['size']) for ask in top_asks)
+
+            self.logger.info(f"Total Bids (Top 5 Levels): {total_bids}")
+            self.logger.info(f"Total Asks (Top 5 Levels): {total_asks}")
 
             # Avoid division by zero
             if total_asks == 0:
@@ -407,10 +427,6 @@ class WSOrderManager:
 
             orders_to_cancel = []
             
-            # Constants
-            TICK_SIZE = os.getenv("TICK_SIZE")
-            REWARD_RANGE = 3 * TICK_SIZE  # 0.03
-            MAX_INCENTIVE_SPREAD = os.getenv("MAX_INCENTIVE_SPREAD")
             
             for order in relevant_orders:
                 order_id = order['id']
@@ -418,10 +434,9 @@ class WSOrderManager:
                 order_size = float(order['original_size'])
 
                 cancel_conditions = {
-                    "outside the reward range": abs(order_price - midpoint_event) > REWARD_RANGE,
-                    "too far from best bid": (best_bid_event - order_price) > MAX_INCENTIVE_SPREAD,
+                    "outside the reward range": abs(order_price - midpoint_event) > .03,
+                    "too far from best bid": (best_bid_event - order_price) > self.MAX_INCENTIVE_SPREAD,
                     "at the best bid": order_price == best_bid_event,
-                    "best bid value is less than $500": (best_bid_event * best_bid_size) < 500,
                 }
 
                 cancel_reasons = [reason for reason, condition in cancel_conditions.items() if condition]
@@ -456,8 +471,8 @@ class WSOrderManager:
          """
          try:
              # Define order parameters based on best_bid_event
-             new_order_price = round(best_bid_event - (2 * os.getenv("TICK_SIZE")), 2) # Adjust as needed
-             new_order_size =  round(os.getenv("MAX_ORDER_SIZE",450)/ new_order_price,0)  # Implement this method
+             new_order_price = round(best_bid_event - (2 * self.TICK_SIZE), 2) # Adjust as needed
+             new_order_size =  round(float(450)/ new_order_price,0)  # Implement this method
 
              # Build and execute the new order
              signed_order = build_order(
