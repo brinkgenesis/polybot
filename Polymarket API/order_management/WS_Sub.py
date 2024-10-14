@@ -95,13 +95,13 @@ class WS_Sub:
         except Exception as e:
             self.logger.error(f"Failed to subscribe to assets: {e}", exc_info=True)
 
-    def unsubscribe_all(self):
+    def unsubscribe_all(self, assets_ids: List[str]):
         if not self.ws_app or not self.ws_app.sock or not self.ws_app.sock.connected:
             self.logger.warning("WebSocket is not connected. Cannot unsubscribe.")
             return
         unsubscribe_message = {
             "type": "unsubscribe",
-            "assets": []  # Assuming an empty list unsubscribes all
+            "assets_ids": list(assets_ids)  # Assuming an empty list unsubscribes all
         }
         self.ws_app.send(json.dumps(unsubscribe_message))
         self.logger.info("Sent unsubscription message for all assets.")

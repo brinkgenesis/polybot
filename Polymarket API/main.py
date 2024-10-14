@@ -1,6 +1,6 @@
-from gamma_clob_query import main as gamma_clob_main
-from bid_manager import build_and_print_order, execute_orders
-from are_orders_scoring import run_order_scoring
+from gamma_client.gamma_clob_query import main as gamma_clob_main
+from order_management.limitOrder import build_order, execute_orders
+from shared.are_orders_scoring import run_order_scoring
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
 import os
@@ -50,7 +50,7 @@ def main():
         gamma_market = market['gamma_market']
         print("Building orders")
         pprint(vars(client))    
-        orders = build_and_print_order(market, gamma_market, client)
+        orders = build_order(market, gamma_market, client)
 
         # Ask user if they want to execute the orders
         execute = input("Do you want to execute these orders? (yes/no): ").lower().strip()

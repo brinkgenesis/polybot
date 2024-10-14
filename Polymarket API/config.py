@@ -48,6 +48,7 @@ POLYMARKET_PROXY_ADDRESS = os.getenv("POLYMARKET_PROXY_ADDRESS")
 MARKET_IDS = ["0xMarketId1", "0xMarketId2"]  # Example placeholder values
 USER_ADDRESSES = ["0xUserAddress1", "0xUserAddress2"]  # Example placeholder values
 TICK_SIZE = 0.01  # Adjust this value as needed
-MAX_INCENTIVE_SPREAD = 0.03  # Adjust this value as needed
+MAX_INCENTIVE_SPREAD = 0.02  # Adjust this value as needed
+MAX_ORDER_SIZE = float(500)
 
 # Other configuration variables can be added here
