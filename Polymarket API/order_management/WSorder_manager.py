@@ -20,7 +20,7 @@ class WSOrderManager:
     def __init__(self, client: ClobClient):
         self.client = client
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.WARNING)
         self.is_running = True
         self.assets_ids: Set[str] = set()
         self.subscribed_assets_ids: Set[str] = set()
@@ -688,7 +688,7 @@ class WSOrderManager:
 
 def main():
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format='%(message)s'
     )
     # Initialize client
@@ -725,3 +725,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

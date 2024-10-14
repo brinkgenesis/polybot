@@ -4,11 +4,17 @@ from typing import Any, Callable, Dict, List
 from datetime import datetime, timezone
 import time
 import os
+print(os.path.abspath(__file__))
 import json
 from utils.utils import shorten_id
-import websocket
+from websocket import WebSocketApp
+print("WebSocketApp imported successfully")
 import ssl
 import certifi
+import sys
+
+
+print(sys.path)
 
 class WS_Sub:
     def __init__(self, memory_lock: threading.Lock, event_callback: Callable[[Dict[str, Any]], None], on_connected: Callable[[], None]):
@@ -111,7 +117,7 @@ class WS_Sub:
         while self.is_running:
             try:
                 self.logger.info(f"Connecting to WebSocket URL: {self.ws_url}")
-                self.ws_app = websocket.WebSocketApp(
+                self.ws_app = WebSocketApp(
                     self.ws_url,
                     on_open=self.on_open,
                     on_message=self.on_message,
